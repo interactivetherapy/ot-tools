@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Occupational Therapy (OT) Developmental Screener · Interactive Therapy Solutions</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'none'; base-uri 'none'">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#A5047E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OT Screener">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/favicon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-tab="form">
+<header class="top no-print">
+  <div class="top-a">
+    <div class="brand"><div id="logo"></div><div class="bt"><div class="prac" id="practice"></div><div class="title" data-title="screener"></div></div></div>
+    <div class="tools"><button type="button" class="btn sm" data-act="print">Print / PDF</button><button type="button" class="btn sm ghost" data-act="export">Export</button><button type="button" class="btn sm ghost" data-act="import">Import</button><button type="button" class="btn sm ghost" data-act="new">New</button></div>
+  </div>
+  <div class="top-b">
+    <nav class="tabs"><button type="button" data-act="tab" data-v="form">Screener</button><button type="button" data-act="tab" data-v="summary">Results Summary</button><button type="button" data-act="tab" data-v="clin">Clinician Copy</button></nav>
+    <div id="childbar" class="childbar"></div>
+    <div id="nav" class="secnav"></div>
+  </div>
+</header>
+<main>
+  <div id="form" class="view v-form"></div>
+  <div id="summary" class="view v-summary"></div>
+  <div id="clin" class="view v-clin"></div>
+</main>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
