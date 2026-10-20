@@ -173,3 +173,17 @@ li.urgent{color:var(--mag);font-weight:600}
 @media (max-width:700px){.phead .logo.hlogo{width:104px}}
 @media print{.phead .logo.hlogo{width:1.3in}}
 .handoff{margin-top:14px;padding:10px 12px;border:1.5px dashed var(--cyan);border-radius:12px;background:#f2fafc}.handoff .check{margin:0 0 4px;background:#fff}.small{font-size:13px}
+.src.s-P,.src.s-T{border-width:2px}.src::before{content:"\25CF\00a0";font-size:9px;vertical-align:1px}
+
+/* signatures */
+.sigctl{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:end;margin:16px 0 4px;padding:10px 12px;border:1px dashed #b9c3cd;border-radius:10px;background:#f7f9fb}.sigctl label{display:flex;flex-direction:column;min-width:180px}.sigctl select,.sigctl input{min-height:40px}
+.sigblk{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-top:14px;font-size:13px;color:var(--muted);break-inside:avoid}
+.sigblk .sline{display:block;border-bottom:1.5px solid var(--slate);height:0;margin:0 0 4px}.sigblk.unsigned .sline{height:28px}
+.sigblk .sigimg{display:block;height:44px;max-width:240px;object-fit:contain;object-position:left bottom;margin-bottom:1px}.sigblk .sigsp{display:block;height:44px}
+.sigblk .sname{color:var(--slate);font-weight:700}.sigblk .sdate{display:flex;align-items:flex-end;height:44px;margin-bottom:1px;color:var(--slate);font-size:14px}
+.sigcan{display:block;width:100%;max-width:900px;aspect-ratio:900/260;border:1.5px solid #b9c3cd;border-radius:10px;background:#fff;touch-action:none;margin:6px 0}
+.proflist{list-style:none;padding:0}.proflist li{display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #e3e8ee}.proflist li span{flex:1}.proflist .sigimg{height:36px;max-width:140px;object-fit:contain}
+.sigmodal .grid2 input{width:100%}.sigmodal .err{color:var(--mag)}
+.modal{position:fixed;inset:0;background:rgba(30,40,50,.45);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
+.mbox{background:#fff;border-radius:16px;padding:18px;width:min(760px,100%);max-height:92vh;overflow:auto}.mbox h2{margin:0 0 4px;color:var(--mag)}
+@media print{.sigblk{margin-top:8px;font-size:8.5pt}.sigblk .sigimg,.sigblk .sigsp,.sigblk .sdate{height:.42in}.endrow .sigwrap .sigblk{margin-top:0}}

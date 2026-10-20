@@ -6,6 +6,117 @@ const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const optL = o => typeof o === "string" ? o : o.l;
 const todayISO = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
+/* ---------- Clinician profiles & signatures (this device only; localStorage; never auto-applied) ---------- */
+const PKEY = "its_clinician_profiles_v1";
+function profStore() { try { const j = JSON.parse(localStorage.getItem(PKEY)); if (j && Array.isArray(j.profiles)) return j; } catch (e) { /* ignore */ } return { profiles: [], inJson: false }; }
+function profSave(st) { localStorage.setItem(PKEY, JSON.stringify(st)); }
+const profGet = id => profStore().profiles.find(p => p.id === id) || null;
+const profLine = p => p ? (p.name || "") + (p.cred ? ", " + p.cred : "") : "";
+// PIN is a convenience lock against accidental use on a shared tablet, not strong security.
+function pinHash(pin, salt) { let h = 0x811c9dc5; const s = salt + "|" + pin; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); }
+const sigFmt = d => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(d || ""); return m ? `${m[2]}/${m[3]}/${m[1]}` : (d || ""); };
+const sigBy = doc => (S.signBy = S.signBy || {})[doc] || null;
+function sigBlock(doc, label) {
+  const b = sigBy(doc), st = profStore(), p = b && b.pid ? st.profiles.find(x => x.id === b.pid) : null, man = b && b.manual != null;
+  const signed = !!(p || (man && b.manual.trim())), dt = (S.signDate = S.signDate || {})[doc] || todayISO();
+  const val = p ? p.id : man ? "__manual" : "";
+  const pick = `<div class="sigctl no-print"><label><span class="lbl">Signed by</span><select data-sigpick="${doc}" aria-label="Signed by"><option value="">Select clinician</option>${st.profiles.map(x => `<option value="${esc(x.id)}"${x.id === val ? " selected" : ""}>${esc(profLine(x))}${x.pin ? " (PIN)" : ""}</option>`).join("")}<option value="__manual"${val === "__manual" ? " selected" : ""}>Type name by hand (not saved)</option><option value="__add">+ Add clinician</option></select></label>
+    ${man ? `<label><span class="lbl">Name and credentials</span><input type="text" maxlength="90" data-sigman="${doc}" value="${esc(b.manual)}" placeholder="Name, credentials"></label>` : ""}
+    ${signed ? `<label><span class="lbl">Date</span><input type="date" data-sigdate="${doc}" value="${esc(dt)}"></label>` : ""}<button type="button" class="link" data-act="sigmanage">Manage clinicians</button></div>`;
+  if (!signed) return pick + `<div class="sigblk unsigned"><div><span class="sline"></span>${esc(label)}</div><div><span class="sline"></span>Date</div></div>`;
+  const who = p ? profLine(p) : b.manual.trim();
+  return pick + `<div class="sigblk signed" data-doc="${doc}"><div>${p && p.img ? `<img class="sigimg" src="${esc(p.img)}" alt="Signature of ${esc(p.name)}">` : `<span class="sigsp"></span>`}<span class="sline"></span><span class="sname">${esc(who)}</span>${p && p.lic ? `<span class="slic"> · License # ${esc(p.lic)}</span>` : ""}</div><div><span class="sdate">${esc(sigFmt(dt))}</span><span class="sline"></span>Date</div></div>`;
+}
+function sigModal(html) { const d = document.createElement("div"); d.className = "modal sigmodal"; d.innerHTML = `<div class="mbox">${html}</div>`; document.body.appendChild(d); d.addEventListener("keydown", e => { if (e.key === "Escape") d.remove(); }); return d; }
+function askPin(p, ok, no) {
+  const d = sigModal(`<h2>Enter PIN</h2><p class="muted">${esc(profLine(p))} protected this signature with a 4-digit PIN.</p><input type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" id="pinIn" autocomplete="off"><p class="err muted" id="pinErr"></p><div class="actions"><button type="button" class="btn" id="pinOk">Sign</button><button type="button" class="btn ghost" id="pinNo">Cancel</button></div>`);
+  const inp = d.querySelector("#pinIn"); inp.focus();
+  const go = () => { if (pinHash(inp.value, p.id) === p.pin) { d.remove(); ok(); } else { d.querySelector("#pinErr").textContent = "PIN does not match."; inp.value = ""; inp.focus(); } };
+  d.querySelector("#pinOk").onclick = go; inp.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  d.querySelector("#pinNo").onclick = () => { d.remove(); no(); };
+}
+function sigApply(doc, v) {
+  const set = x => { S.signBy = S.signBy || {}; if (x) S.signBy[doc] = x; else delete S.signBy[doc]; save(); sigRedraw(); };
+  if (!v) return set(null);
+  if (v === "__manual") return set({ manual: "" });
+  if (v === "__add") { sigRedraw(); return editProfile(null, id => { const p = profGet(id); if (p && !p.pin) set({ pid: id }); else if (p) askPin(p, () => set({ pid: id }), sigRedraw); }); }
+  const p = profGet(v); if (!p) return set(null);
+  if (p.pin) askPin(p, () => set({ pid: v }), sigRedraw); else set({ pid: v });
+}
+function trimSig(src) { // crop to the ink, make near-white transparent, scale down
+  const w = src.width, h = src.height, g = src.getContext("2d"), im = g.getImageData(0, 0, w, h), a = im.data; let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; const ink = a[i + 3] > 24 && (a[i] < 225 || a[i + 1] < 225 || a[i + 2] < 225); if (!ink) a[i + 3] = 0; else { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
+  if (x1 < 0) return null; g.putImageData(im, 0, 0);
+  const pad = 4, cw = x1 - x0 + 1 + pad * 2, ch = y1 - y0 + 1 + pad * 2, k = Math.min(1, 480 / cw, 150 / ch), o = document.createElement("canvas");
+  o.width = Math.max(1, Math.round(cw * k)); o.height = Math.max(1, Math.round(ch * k)); o.getContext("2d").drawImage(src, x0 - pad, y0 - pad, cw, ch, 0, 0, o.width, o.height);
+  return o.toDataURL("image/png");
+}
+function editProfile(id, done) {
+  const st = profStore(), p = id ? st.profiles.find(x => x.id === id) : null;
+  const d = sigModal(`<h2>${p ? "Edit clinician" : "Add clinician"}</h2><p class="muted">Saved on this device only. Never added to the shared apps or to exports unless you choose.</p>
+  <div class="grid2"><label><span class="lbl">Clinician name</span><input type="text" id="spName" maxlength="60" value="${esc(p ? p.name : "")}"></label><label><span class="lbl">Credentials</span><input type="text" id="spCred" maxlength="60" placeholder="e.g. OTR/L, BCBA" value="${esc(p ? p.cred : "")}"></label>
+  <label><span class="lbl">License # (optional)</span><input type="text" id="spLic" maxlength="30" value="${esc(p ? p.lic : "")}"></label><label><span class="lbl">4-digit PIN to apply signature (optional)</span><input type="password" id="spPin" inputmode="numeric" maxlength="4" autocomplete="new-password" placeholder="${p && p.pin ? "PIN set; type to change" : "Off"}"></label></div>
+  ${p && p.pin ? `<label class="chk"><input type="checkbox" id="spPinOff"> Remove PIN</label>` : ""}
+  <div class="lbl">Signature: draw below (finger, stylus or mouse) or upload an image</div>
+  <canvas id="spCan" width="900" height="260" class="sigcan" aria-label="Signature drawing area"></canvas>
+  <div class="actions"><button type="button" class="btn sm ghost" id="spUndo">Undo stroke</button><button type="button" class="btn sm ghost" id="spClear">Clear</button><label class="btn sm ghost">Upload PNG/JPG<input type="file" id="spFile" accept="image/png,image/jpeg" hidden></label></div>
+  <p class="err muted" id="spErr"></p>
+  <div class="actions"><button type="button" class="btn" id="spSave">Save clinician</button><button type="button" class="btn ghost" id="spCancel">Cancel</button></div>`);
+  const cv = d.querySelector("#spCan"), g = cv.getContext("2d"); let strokes = [], bg = null, cur = null;
+  const draw = () => { g.clearRect(0, 0, cv.width, cv.height); if (bg) { const k = Math.min(cv.width / bg.width, cv.height / bg.height); g.drawImage(bg, (cv.width - bg.width * k) / 2, (cv.height - bg.height * k) / 2, bg.width * k, bg.height * k); }
+    g.lineWidth = 4; g.lineCap = "round"; g.lineJoin = "round"; g.strokeStyle = "#1a2a4a"; strokes.forEach(s => { g.beginPath(); s.forEach((q, i) => i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1])); if (s.length === 1) g.lineTo(s[0][0] + .1, s[0][1]); g.stroke(); }); };
+  const loadImg = (src, cb) => { const im = new Image(); im.onload = () => cb(im); im.src = src; };
+  if (p && p.img) loadImg(p.img, im => { bg = im; draw(); });
+  const pt = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+  cv.addEventListener("pointerdown", e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); cur = [pt(e)]; strokes.push(cur); draw(); });
+  cv.addEventListener("pointermove", e => { if (cur) { cur.push(pt(e)); draw(); } });
+  const end = () => { cur = null; }; cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+  d.querySelector("#spUndo").onclick = () => { if (strokes.length) strokes.pop(); else bg = null; draw(); };
+  d.querySelector("#spClear").onclick = () => { strokes = []; bg = null; draw(); };
+  d.querySelector("#spFile").onchange = e => { const f = e.target.files[0]; if (!f) return; if (!/^image\/(png|jpeg)$/.test(f.type)) { d.querySelector("#spErr").textContent = "Please choose a PNG or JPG image."; return; }
+    const r = new FileReader(); r.onload = () => loadImg(r.result, im => { const t = document.createElement("canvas"); t.width = im.width; t.height = im.height; t.getContext("2d").drawImage(im, 0, 0); const u = trimSig(t); if (!u) { d.querySelector("#spErr").textContent = "No signature found in that image."; return; } loadImg(u, im2 => { bg = im2; strokes = []; draw(); }); }); r.readAsDataURL(f); };
+  d.querySelector("#spCancel").onclick = () => d.remove();
+  d.querySelector("#spSave").onclick = () => {
+    const name = d.querySelector("#spName").value.trim(), pin = d.querySelector("#spPin").value.trim(), err = d.querySelector("#spErr");
+    if (!name) { err.textContent = "Enter the clinician name."; return; } if (pin && !/^\d{4}$/.test(pin)) { err.textContent = "PIN must be exactly 4 digits."; return; }
+    const t = document.createElement("canvas"); t.width = cv.width; t.height = cv.height; t.getContext("2d").drawImage(cv, 0, 0);
+    const s2 = profStore(), pid = p ? p.id : "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const np = { id: pid, name, cred: d.querySelector("#spCred").value.trim(), lic: d.querySelector("#spLic").value.trim(), img: trimSig(t), pin: p && p.pin && !(d.querySelector("#spPinOff") || {}).checked ? p.pin : "" };
+    if (pin) np.pin = pinHash(pin, pid);
+    const i = s2.profiles.findIndex(x => x.id === pid); if (i >= 0) s2.profiles[i] = np; else s2.profiles.push(np);
+    profSave(s2); d.remove(); sigRedraw(); if (done) done(pid); else sigManage();
+  };
+  d.querySelector("#spName").focus();
+}
+function sigManage() {
+  document.querySelectorAll(".sigmodal").forEach(m => m.remove());
+  const st = profStore();
+  const d = sigModal(`<h2>Clinician signatures</h2><p class="muted">Saved on this device only. A signature is applied only when someone picks a clinician in a document's “Signed by” box.</p>
+  ${st.profiles.length ? `<ul class="proflist">${st.profiles.map(p => `<li>${p.img ? `<img class="sigimg" src="${esc(p.img)}" alt="">` : `<span class="muted">(no signature image)</span>`}<span><b>${esc(profLine(p))}</b>${p.lic ? " · License # " + esc(p.lic) : ""}${p.pin ? " · PIN on" : ""}</span><button type="button" class="btn sm ghost" data-pedit="${esc(p.id)}">Edit</button><button type="button" class="btn sm ghost" data-pdel="${esc(p.id)}">Delete</button></li>`).join("")}</ul>` : `<p>No clinicians saved yet.</p>`}
+  <label class="chk"><input type="checkbox" id="spJson"${st.inJson ? " checked" : ""}> Include the signing clinician's saved signature in JSON exports (off by default)</label>
+  <div class="actions"><button type="button" class="btn" id="spAdd">+ Add clinician</button><button type="button" class="btn ghost" id="spClose">Done</button></div>`);
+  d.querySelector("#spAdd").onclick = () => { d.remove(); editProfile(null); };
+  d.querySelector("#spClose").onclick = () => d.remove();
+  d.querySelector("#spJson").onchange = e => { const s2 = profStore(); s2.inJson = e.target.checked; profSave(s2); };
+  d.querySelectorAll("[data-pedit]").forEach(b => b.onclick = () => { const id = b.dataset.pedit, p = profGet(id); d.remove(); if (p.pin) askPin(p, () => editProfile(id), sigManage); else editProfile(id); });
+  d.querySelectorAll("[data-pdel]").forEach(b => b.onclick = () => { const id = b.dataset.pdel, p = profGet(id);
+    const del = () => { if (!confirm(`Delete ${profLine(p)} from this device?`)) return sigManage(); const s2 = profStore(); s2.profiles = s2.profiles.filter(x => x.id !== id); profSave(s2); sigRedraw(); sigManage(); };
+    d.remove(); if (p.pin) askPin(p, del, sigManage); else del(); });
+}
+function sigExport(o) { // adds the signing clinicians' profiles only when the option is ticked
+  const st = profStore(); if (!st.inJson) return o;
+  const ids = Object.values(o.signBy || {}).map(b => b && b.pid).filter(Boolean), ps = st.profiles.filter(p => ids.includes(p.id));
+  return ps.length ? Object.assign({}, o, { clinicianProfiles: ps }) : o;
+}
+function sigImport(j) { const ps = j && j.clinicianProfiles; if (j) delete j.clinicianProfiles; if (!Array.isArray(ps) || !ps.length) return;
+  const st = profStore(), add = ps.filter(p => p && p.id && p.name && !st.profiles.some(x => x.id === p.id)); if (!add.length) return;
+  if (confirm(`This file includes saved signature(s) for ${add.map(profLine).join("; ")}. Save to this device?`)) { st.profiles = st.profiles.concat(add.map(p => ({ id: String(p.id), name: String(p.name), cred: String(p.cred || ""), lic: String(p.lic || ""), img: /^data:image\/png;base64,/.test(p.img || "") ? p.img : null, pin: String(p.pin || "") }))); profSave(st); } }
+document.addEventListener("change", e => { const t = e.target, D = t.dataset || {};
+  if (D.sigpick) { sigApply(D.sigpick, t.value); e.stopImmediatePropagation(); }
+  else if (D.sigdate) { (S.signDate = S.signDate || {})[D.sigdate] = t.value || todayISO(); save(); sigRedraw(); e.stopImmediatePropagation(); }
+  else if (D.sigman) { S.signBy[D.sigman] = { manual: t.value }; save(); sigRedraw(); e.stopImmediatePropagation(); } }, true);
+document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-act=sigmanage]"); if (b) { e.stopImmediatePropagation(); sigManage(); } }, true);
+function sigRedraw() { setTimeout(render, 0); }
 const RANK = { Typical: 0, Monitor: 1, Concern: 2 }, STS = ["Typical", "Monitor", "Concern"];
 const SEC = Object.fromEntries(C.sections.map(s => [s.id, s]));
 const listJoin = l => l.length < 2 ? l.join("") : l.slice(0, -1).join(", ") + (l.length > 2 ? "," : "") + " and " + l[l.length - 1];
@@ -15,7 +126,7 @@ function blank() {
     bandOv: "auto", olderAll: false, secBand: {}, secAuto: {}, older: {}, younger: {}, ans: {}, prompt: {}, pcount: {}, trials: {}, val: {}, src: {}, opts: {}, sel: {}, tr: {},
     behav: { none: false, f: {}, long: {} }, wcOn: false, scores: {}, domOv: {}, screener: null, refs: {},
     rep: { sec: {}, gen: null }, rec: { svc: "Recommended", freq: "1–2x/week", len: "45-minute", dur: "6 months", setting: "clinic", home: true, cg: true, reeval: "6 months", prog: "Good", factors: ["consistent attendance", "caregiver carryover of the home program"] },
-    goals: {}, parent: { home: [], shared: [], text: null, addl: "" }, guide: {}, notes: "", sign: "", fromScreener: null, scrNotes: "", gfbOn: true, inote: {}, tab: "form", updated: null };
+    goals: {}, parent: { home: [], shared: [], text: null, addl: "" }, guide: {}, notes: "", sign: "", fromScreener: null, scrNotes: "", gfbOn: true, inote: {}, edits: {}, restore: {}, tab: "form", updated: null };
 }
 function merge(a, b) { for (const k in b) { if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k]) && a[k] && typeof a[k] === "object" && !Array.isArray(a[k])) merge(a[k], b[k]); else a[k] = b[k]; } return a; }
 let S = (() => { try { const j = JSON.parse(localStorage.getItem(KEY)); if (j && j.v === 1) return merge(blank(), j); } catch (e) {} return blank(); })();
@@ -92,7 +203,7 @@ function importPrefill(j) {
 }
 /* ---------- screener handoff (same device / same site) ---------- */
 function readHandoffs() { try { const j = JSON.parse(localStorage.getItem(C.handoffKey)); if (j && j.items) return Object.values(j.items).sort((a, b) => (b.saved || "").localeCompare(a.saved || "")); } catch (e) {} return []; }
-function isDirty() { const m = S.meta; return !!(m.initials.trim() || m.dob || Object.keys(S.ans).length || Object.keys(S.opts).length || testRows(null).length || S.rep.gen != null || S.fromScreener); }
+function isDirty() { const m = S.meta; return !!(m.initials.trim() || m.dob || Object.keys(S.ans).length || Object.keys(S.opts).length || testRows(null).length || Object.keys(S.edits || {}).length || S.fromScreener); }
 let showPicker = false;
 function applyScreenerItems(j) {
   const date = (j.demographics || {}).screeningDate || "", done = [], unmatched = [];
@@ -127,7 +238,7 @@ const sel = (bind, opts, cur, ph) => `<select data-bind="${bind}">${opts.map(o =
 function trialOpts() { const o = [{ k: "", l: "Trials…" }]; C.trialDen.forEach(y => { for (let x = 0; x <= y; x++) o.push({ k: x + "/" + y, l: x + " of " + y }); }); return o; }
 const TRIALS = trialOpts();
 const PCOUNT = [{ k: "", l: "Prompt count…" }].concat(C.promptCounts.map(n => ({ k: String(n), l: "Prompts ×" + n })));
-function srcTag(id) { const s = srcOf(id); return `<button type="button" class="src s-${s}" data-act="src" data-id="${id}" title="Tap: Observed → Parent/Caregiver → Teacher">${esc(C.srcShort[s])}</button>`; }
+function srcTag(id) { const s = srcOf(id); return `<button type="button" class="src s-${s}" data-act="src" data-id="${id}" data-src="${s}" aria-label="Source: ${esc(C.srcShort[s])}. Tap to change." title="Tap: Observed → Parent/Caregiver → Teacher">${esc(C.srcShort[s])}</button>`; }
 function optsBlock(b) { const cur = S.opts[b.id] || [];
   return `<div class="row-opts"><div class="lbl">${esc(b.label)}</div><div class="chips">${b.opts.map(o => chip("opt", `data-g="${b.id}" data-v="${esc(optL(o))}" data-m="${b.multi ? 1 : 0}"`, optL(o), cur.includes(optL(o)))).join("")}</div></div>`; }
 function selBlock(b) { return `<label class="row-sel"><span class="lbl">${esc(b.label)}</span>${sel("sel." + b.id, b.assist ? C.assist : b.opts, S.sel[b.id])}</label>`; }
@@ -208,6 +319,7 @@ function renderScores() {
 }
 /* ---------- text generation ---------- */
 const Nm = () => S.meta.initials.trim() || "The child";
+const nmMid = () => S.meta.initials.trim() || "the child";
 const pcnt = id => { const n = (S.pcount || {})[id]; return n && S.prompt[id] && S.prompt[id] !== "I" ? " (x" + n + ")" : ""; };
 const supOf = id => (C.support[S.prompt[id] || ""] || "support") + pcnt(id);
 const supParent = id => (C.supportParent[S.prompt[id]] || C.support[S.prompt[id] || ""] || "support").replace("physical assistance", "hands-on help");
@@ -219,6 +331,8 @@ function clause(i, past) {
   if (isNS(i.id)) return (past ? "required " : "needs ") + sup + " to " + i.do + dataOf(i);
   return (past ? "was beginning to " : "is beginning to ") + i.do + (p && p !== "I" ? " with " + sup : "") + dataOf(i);
 }
+const FWS = { O: "often see", A: "consistently see", S: "sometimes see", R: "rarely see", N: "rarely see" };
+function repClause(i, who) { const n = nmMid(); return i.sys ? `${who} ${FWS[S.ans[i.id]]} ${n} ${i.obs}` : `${n} ${clause(i, false)}`; }
 function flagged(id) { // ordered list of items that are flagged (perf NS/E, freq flags or 'sometimes')
   if (id === "WC") return [];
   const p = perfItems(id).filter(i => isNS(i.id) || S.ans[i.id] === "E").sort((a, b) => (isNS(b.id) ? 1 : 0) - (isNS(a.id) ? 1 : 0));
@@ -286,14 +400,15 @@ function sum6(id) {
   if (id === "GFB") parts.push("Testing validity: " + validityText());
   else if (id === "WC") parts.push("Standardized testing was not completed for this area; findings are based on clinical observation and caregiver report.");
   else if (!rows.length) parts.push("No standardized scores were reported for this area; findings are based on clinical observation and caregiver/teacher report.");
-  else { const by = {}; rows.forEach(r => (by[r.t.l] = by[r.t.l] || []).push(r)); parts.push(Object.keys(by).map(t => `On the ${t}, ${n} obtained ` + listJoin(by[t].map(r => r.kind === "ss" ? `a ${r.l} standard score of ${r.ss}${r.pr ? " (" + ord(r.pr) + " percentile)" : ""}${r.d ? ", in the " + r.d + " range" : ""}` : `a ${r.l} scale score of ${r.ss}`)) + ".").join(" ")); }
+  else { const by = {}; rows.forEach(r => (by[r.t.l] = by[r.t.l] || []).push(r)); parts.push(Object.keys(by).map(t => `On the ${t}, ${nmMid()} obtained ` + listJoin(by[t].map(r => r.kind === "ss" ? `a ${r.l} standard score of ${r.ss}${r.pr ? " (" + ord(r.pr) + " percentile)" : ""}${r.d ? ", in the " + r.d + " range" : ""}` : `a ${r.l} scale score of ${r.ss}`)) + ".").join(" ")); }
   let obs, rep = [];
-  if (id === "WC") { const w = wcText(); obs = w.obs; if (w.rep.length) rep.push(`Per caregiver report, concerns include ${listJoin(w.rep)}.`); }
+  if (id === "WC") { const w = wcText(); obs = w.obs; if (w.rep.length) rep.push(`Caregiver reports the following: ${w.rep.join("; ")}.`); }
   else { const fl = flagged(id); obs = fl.filter(i => srcOf(i.id) === "O").map(i => clause(i, true)).concat(extrasObs(id));
-    ["P", "T"].forEach(s => { const r = fl.filter(i => srcOf(i.id) === s); if (r.length) rep.push(`Per ${s === "P" ? "caregiver" : "teacher"} report, ${n} ${listJoin(r.map(i => clause(i, false)))}.`); }); }
-  parts.push(obs.length ? `During the evaluation, ${n} ${listJoin(obs)}.` : "During the evaluation, observed performance was consistent with age expectations for the items assessed.");
+    ["P", "T"].forEach(s => { const r = fl.filter(i => srcOf(i.id) === s); if (r.length) rep.push(`${s === "P" ? "Caregiver" : "Teacher"} reports that ${listJoin(r.map(i => repClause(i, "they")))}.`); }); }
+  const obsRated = id === "WC" ? obs.length : perfItems(id).concat(freqItems(id)).filter(i => S.ans[i.id] && srcOf(i.id) === "O").length + extrasObs(id).length;
+  parts.push(obs.length ? `During the evaluation, ${nmMid()} ${listJoin(obs)}.` : obsRated ? "During the evaluation, observed performance was consistent with age expectations for the items assessed." : "Items in this area were not directly observed during the evaluation; findings are based on report.");
   parts.push(rep.length ? rep.join(" ") : "No additional concerns in this area were reported by caregivers or teachers.");
-  parts.push(st === "Typical" ? `Current skills appear to support age-expected participation in ${sec.impact}.` : impactSentence(sec));
+  parts.push(st === "Typical" ? `Current skills appear to support age-expected ${/^participation\b/.test(sec.impact) ? "" : "participation in "}${sec.impact}.` : impactSentence(sec));
   const strg = id === "WC" ? wcText().str : strengthsOf(id).map(i => i.do), good = rows.filter(r => r.kind === "ss" && ["avg", "above"].includes(descBand(r.d)));
   let s = strg.length ? `Strengths include the ability to ${listJoin(strg.slice(0, 4))}${id === "WC" ? "" : " independently"}` : "";
   if (id === "WC" && strg.length) s = `Strengths include ${listJoin(strg.slice(0, 4))}`;
@@ -310,9 +425,35 @@ function fusionAuto(id) {
   testRows(id).filter(r => r.kind === "ss" ? C.belowDesc.includes(r.d) : r.ss <= 10).forEach(r => imp.push(`• ${r.t.l} ${r.l}: ${r.kind === "ss" ? "standard score " + r.ss + (r.pr ? ", " + ord(r.pr) + " percentile" : "") + ", " + r.d : "scale score " + r.ss}`));
   return { str: p[5], imp: imp.join("\n") || "No performance impairments identified in this area for the items assessed.", lim: st === "Typical" ? "No functional limitations were identified in this area for the items assessed." : impactSentence(sec, "Findings"), sum: p.join(" ") };
 }
+/* Edited text: edits are kept paragraph by paragraph; a paragraph whose underlying answers change
+   (for example, a source tag) is regenerated right away and the replaced edit can be restored. */
+function paraKey(p, i) { const m = p.match(/^(?:\u2022 )?([^:\n]{2,70}):\s/); return m ? "k:" + m[1] : "i:" + i; }
+function mergeEdits(edited, base, auto) {
+  const B = {}, E = {}; base.split("\n").forEach((p, i) => { B[paraKey(p, i)] = p; }); edited.split("\n").forEach((p, i) => { E[paraKey(p, i)] = p; });
+  let lost = false; const used = {};
+  const out = auto.split("\n").map((p, i) => { const k = paraKey(p, i); used[k] = 1; if (k in E && B[k] === p) return E[k]; if (k in E && E[k] !== B[k]) lost = true; return p; });
+  Object.keys(E).forEach(k => { if (!used[k] && !(k in B) && E[k].trim()) out.push(E[k]); });
+  return { text: out.join("\n"), lost };
+}
+function autoFor(key) { const k = key.split("."); return k[0] === "sec" ? fusionAuto(k[1])[k[2]] : k[0] === "gen" ? genAuto() : k[0] === "rec" ? recAuto() : parentAuto(); }
+function fieldVal(key) { const e = S.edits[key], auto = autoFor(key); if (!e) return auto;
+  if (e.b == null || e.b === auto) return e.t;
+  const m = mergeEdits(e.t, e.b, auto); if (m.lost) S.restore[key] = e.t;
+  if (m.text === auto) delete S.edits[key]; else S.edits[key] = { t: m.text, b: auto };
+  save(); return m.text; }
+function setEdit(key, v) { const e = S.edits[key]; S.edits[key] = { t: v, b: e ? e.b : autoFor(key) }; }
+function fieldNote(key) { const e = S.edits[key];
+  if (S.restore[key] != null) return `<div class="banner no-print">Updated to match changed answers (for example, a source tag). <button type="button" class="link" data-act="erestore" data-k="${key}">Restore my edited text</button> <button type="button" class="link" data-act="edismiss" data-k="${key}">OK</button></div>`;
+  if (e && e.b == null) return `<div class="banner no-print">Edited in an earlier version; this text does not update when answers change. <button type="button" class="link" data-act="reset" data-k="${key}">Update from answers</button></div>`;
+  return e ? `<div class="muted small no-print">Edited · paragraphs update when their answers change.</div>` : ""; }
+function migrateEdits() { const R = S.rep || {}; S.edits = S.edits || {}; S.restore = S.restore || {};
+  Object.entries(R.sec || {}).forEach(([id, o]) => Object.entries(o || {}).forEach(([f, v]) => { if (v != null && !S.edits["sec." + id + "." + f]) S.edits["sec." + id + "." + f] = { t: v, b: null }; }));
+  if (R.gen != null && !S.edits.gen) S.edits.gen = { t: R.gen, b: null }; if (R.rec != null && !S.edits.rec) S.edits.rec = { t: R.rec, b: null };
+  if (S.parent && S.parent.text != null && !S.edits.parent) S.edits.parent = { t: S.parent.text, b: null };
+  S.rep.sec = {}; S.rep.gen = null; S.rep.rec = null; if (S.parent) S.parent.text = null; }
 const FIELDS = [["str", "Strengths"], ["imp", "Performance Impairments"], ["lim", "Functional Limitations"], ["sum", "Section Summary"]];
 const repSec = id => S.rep.sec[id] || (S.rep.sec[id] = {});
-const fusionVal = (id, f) => { const v = repSec(id)[f]; return v != null ? v : fusionAuto(id)[f]; };
+const fusionVal = (id, f) => fieldVal("sec." + id + "." + f);
 const selfHarm = () => has("mh", "Self-harm statements reported");
 const refOn = r => !!S.refs[r.id] || (r.id === "psych" && selfHarm());
 const freqWord = f => f === "Every other week" ? "every other week" : f.replace("x/week", f.startsWith("1x") ? " time per week" : " times per week").replace(/^1 time/, "once").replace(/^1x/, "once");
@@ -350,8 +491,8 @@ function recAuto() {
   if (S.wcOn && (S.opts.wcNeeds || []).length) o.push(`Equipment and seating: ${listJoin(S.opts.wcNeeds.map(v => v.replace("Letter of medical necessity (LMN)", "letter of medical necessity").toLowerCase().replace("pt", "PT")))}.`);
   return o.join(" ");
 }
-const genVal = () => S.rep.gen != null ? S.rep.gen : genAuto();
-const recVal = () => S.rep.rec != null ? S.rep.rec : recAuto();
+const genVal = () => fieldVal("gen");
+const recVal = () => fieldVal("rec");
 function fusionAll() {
   const L = [C.titles.report, `${Nm()} · DOB ${S.meta.dob || "—"} · Evaluation ${S.meta.date || "—"}`, ""];
   activeSecs().forEach(s => { L.push("=== " + s.title + " ==="); FIELDS.forEach(([f, l]) => { L.push(l + ":"); L.push(fusionVal(s.id, f)); L.push(""); }); });
@@ -359,14 +500,14 @@ function fusionAll() {
   return L.join("\n");
 }
 /* ---------- report view ---------- */
-const ta = (id, bind, val, rows) => `<textarea id="${id}" data-bind="${bind}" rows="${rows || 3}" spellcheck="true">${esc(val)}</textarea>`;
+const ta = (id, key, val, rows) => `<textarea id="${id}" data-ekey="${key}" rows="${rows || 3}" spellcheck="true">${esc(val)}</textarea>${fieldNote(key)}`;
 const tools = (id, reset) => `<div class="ftools no-print"><button type="button" class="btn xs" data-act="copy" data-src="${id}">Copy</button><button type="button" class="btn xs ghost" data-act="reset" data-k="${reset}">Reset</button></div>`;
 const contactLine = () => { const k = C.contact; return `${k.address} · Phone ${k.phone} · Fax ${k.fax} · ${k.email}`; };
-function footLine() { const k = C.contact, a = S.meta; return `${k.name} · ${k.address} · Phone ${k.phone} · Fax ${k.fax} · ${k.email}${a.initials ? " · Child: " + a.initials : ""}`; }
+function footLine() { const k = C.contact, a = S.meta; return `${k.address} · Ph ${k.phone} · Fax ${k.fax} · ${k.email}`; }
 function setFoot() { let st = document.getElementById("pagefoot"); if (!st) { st = document.createElement("style"); st.id = "pagefoot"; document.head.appendChild(st); }
   const q = JSON.stringify(footLine()); st.textContent = `@page{@bottom-left{content:${q};width:82%;font:7pt -apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#6b7686;vertical-align:top;padding-top:3mm}@bottom-right{content:"Page " counter(page) " of " counter(pages);width:16%;white-space:nowrap;font:7pt -apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#6b7686;vertical-align:top;padding-top:3mm}}`; }
 function headBlock(title) { const m = S.meta, a = age();
-  return `<div class="dochead"><img src="${esc(C.logo)}" alt="${esc(C.practice)} logo" class="doclogo"><div class="dht"><div class="prac">${esc(C.practice)}</div><h1>${esc(title)}</h1><div class="contact">${esc(contactLine())}</div></div></div>
+  return `<div class="dochead"><img src="${esc(C.logo)}" alt="${esc(C.practice)} logo" class="doclogo"><div class="dht"><div class="prac">${esc(C.practice)}</div><h1>${esc(title)}</h1></div></div>
   <table class="meta"><tr><td><b>Child</b> ${esc(m.initials || "—")}</td><td><b>DOB</b> ${esc(m.dob || "—")}</td><td><b>Age</b> ${a ? a.y + " yr " + a.m + " mo" : "—"}</td><td><b>Evaluation date</b> ${esc(m.date || "—")}</td></tr>
   <tr><td colspan="2"><b>Setting</b> ${esc(m.setting.map(k => (C.settings.find(o => o.k === k) || {}).l).join(", ") || "—")}</td><td colspan="2"><b>Evaluator</b> ${esc(m.clinician || "—")}</td></tr></table>`; }
 function scoreTable() { const rows = testRows(null); if (!rows.length) return `<p class="muted">No standardized tests entered.${C.tests.filter(t => sc(t.id).adm === "no").length ? " Not administered: " + esc(C.tests.filter(t => sc(t.id).adm === "no").map(t => t.l).join(", ")) + "." : ""}</p>`;
@@ -376,7 +517,7 @@ function renderReport() {
   const R = S.rec, m = S.meta;
   const secHtml = activeSecs().map(s => { const st = status(s).st;
     return `<section class="sec repsec"><div class="sec-h"><span class="num">${s.n}</span><h2>${esc(s.title)}</h2><span class="pill st-${st}">${st}</span></div><div class="sec-b">
-    ${FIELDS.map(([f, l]) => `<div class="field"><div class="fhead"><span class="lbl">${l}</span>${tools("f-" + s.id + "-" + f, "sec." + s.id + "." + f)}</div>${ta("f-" + s.id + "-" + f, "rep.sec." + s.id + "." + f, fusionVal(s.id, f), f === "sum" ? 6 : 3)}</div>`).join("")}</div></section>`; }).join("");
+    ${FIELDS.map(([f, l]) => `<div class="field"><div class="fhead"><span class="lbl">${l}</span>${tools("f-" + s.id + "-" + f, "sec." + s.id + "." + f)}</div>${ta("f-" + s.id + "-" + f, "sec." + s.id + "." + f, fusionVal(s.id, f), f === "sum" ? 6 : 3)}</div>`).join("")}</div></section>`; }).join("");
   const svc = m.svcNow.length || m.svcPast.length ? `<p><b>Services now:</b> ${esc(m.svcNow.join(", ") || "none reported")} · <b>Past:</b> ${esc(m.svcPast.join(", ") || "none reported")}</p>` : "";
   $("#report").innerHTML = `<div class="doc">${headBlock(C.titles.report)}
   <div class="no-print actions"><button type="button" class="btn" data-act="fusionAll">Copy all for Fusion</button><span class="muted">Text is editable; Reset restores the auto text. Goal areas are not included.</span></div>
@@ -387,25 +528,35 @@ function renderReport() {
   <section class="sec"><div class="sec-h"><span class="num">Σ</span><h2>General Summary</h2></div><div class="sec-b">
   <div class="grid2 no-print"><label><span class="lbl">Prognosis</span>${sel("rec.prog", C.prognosis, R.prog)}</label><div></div></div>
   <div class="row-opts no-print"><div class="lbl">Prognosis factors</div><div class="chips">${C.progFactors.map(f => chip("factor", `data-v="${esc(f)}"`, f, R.factors.includes(f))).join("")}</div></div>
-  <div class="field"><div class="fhead"><span class="lbl">General Summary</span>${tools("f-gen", "gen")}</div>${ta("f-gen", "rep.gen", genVal(), 9)}</div></div></section>
+  <div class="field"><div class="fhead"><span class="lbl">General Summary</span>${tools("f-gen", "gen")}</div>${ta("f-gen", "gen", genVal(), 9)}</div></div></section>
   <section class="sec"><div class="sec-h"><span class="num">✓</span><h2>Recommendations</h2></div><div class="sec-b">
   <div class="grid4 no-print"><label><span class="lbl">OT services</span>${sel("rec.svc", C.rec.services, R.svc)}</label><label><span class="lbl">Frequency</span>${sel("rec.freq", C.rec.freq, R.freq)}</label><label><span class="lbl">Session length</span>${sel("rec.len", C.rec.len, R.len)}</label><label><span class="lbl">Duration</span>${sel("rec.dur", C.rec.dur, R.dur)}</label>
   <label><span class="lbl">Setting</span>${sel("rec.setting", C.rec.setting, R.setting)}</label><label><span class="lbl">Re-evaluation</span>${sel("rec.reeval", C.rec.reeval, R.reeval)}</label><div class="chips">${chip("rflag", 'data-k="home"', "Home program", R.home)}${chip("rflag", 'data-k="cg"', "Caregiver training", R.cg)}</div></div>
   <div class="row-opts no-print"><div class="lbl">Referrals</div><div class="chips">${C.referrals.map(r => chip("ref", `data-id="${r.id}"`, r.l, refOn(r))).join("")}</div>${selfHarm() ? `<div class="banner warn">${esc(C.referrals.find(r => r.id === "psych").trig)}</div>` : ""}</div>
-  <div class="field"><div class="fhead"><span class="lbl">Recommendations</span>${tools("f-rec", "rec")}</div>${ta("f-rec", "rep.rec", recVal(), 5)}</div></div></section>
-  <div class="sigline"><span>Evaluator signature / credentials</span><span>Date</span></div></div>`;
+  <div class="field"><div class="fhead"><span class="lbl">Recommendations</span>${tools("f-rec", "rec")}</div>${ta("f-rec", "rec", recVal(), 5)}</div></div></section>
+  ${sigBlock("report", "Evaluator signature / credentials")}</div>`;
   document.querySelectorAll("#report textarea").forEach(grow);
 }
 /* ---------- parent summary ---------- */
 const PFW = { O: "often", A: "usually", S: "sometimes", R: "rarely", N: "rarely" };
-function pClause(i) { if (i.sys) return PFW[S.ans[i.id]] + " seems to " + i.obs; return isNS(i.id) ? "needs " + supParent(i.id) + " to " + i.do : "is beginning to " + i.do + (S.prompt[i.id] && S.prompt[i.id] !== "I" ? " with " + supParent(i.id) : ""); }
+const PWITH = i => S.prompt[i.id] && S.prompt[i.id] !== "I" ? " with " + supParent(i.id) : "";
+// Observed: past tense ("we often saw"); reported: present tense with an explicit reporter ("you often see", "they often see").
+const pNm = () => S.meta.initials.trim() || "your child";
+function pClause(i, src) { const n = pNm();
+  if (src === "O") return i.sys ? `we ${PFW[S.ans[i.id]]} saw ${n} ${i.obs}` : isNS(i.id) ? `${n} needed ${supParent(i.id)} to ${i.do}` : `${n} was beginning to ${i.do}${PWITH(i)}`;
+  if (i.sys) return `${src === "P" ? "you" : "they"} ${PFW[S.ans[i.id]]} see ${n} ${i.obs}`;
+  return isNS(i.id) ? `${n} needs ${supParent(i.id)} to ${i.do}` : `${n} is beginning to ${i.do}${PWITH(i)}`; }
 function parentAuto() {
-  const n = Nm(), L = [];
+  const n = S.meta.initials.trim() || "Your child", L = [];
   activeSecs().filter(s => status(s).st !== "Typical").forEach(s => {
-    let c; if (s.id === "WC") { const w = wcText(); c = w.obs.slice(0, 3).map(x => x.replace(/^was a /, "is a ").replace(/^used /, "uses ").replace(/^presented with /, "sits with ").replace(/^completed /, "completes ").replace(/^had /, "has ")); }
-    else { const fl = flagged(s.id), ns = fl.filter(i => isNS(i.id) || fFlag(i)); c = (ns.length ? ns : fl).slice(0, 3).map(i => (srcOf(i.id) === "O" ? "" : srcOf(i.id) === "P" ? "at home, " : "at school, ") + pClause(i)); }
+    const sen = [];
+    if (s.id === "WC") { const w = wcText(), c = w.obs.slice(0, 3).map(x => x.replace(/^was a /, "is a ").replace(/^used /, "uses ").replace(/^presented with /, "sits with ").replace(/^completed /, "completes ").replace(/^had /, "has ")); if (c.length) sen.push(`${n} ${listJoin(c)}.`); }
+    else { const fl = flagged(s.id), ns = fl.filter(i => isNS(i.id) || fFlag(i)), pick = (ns.length ? ns : fl).slice(0, 3);
+      // one sentence per source, always in the order: observed, caregiver-reported, teacher-reported
+      [["O", "During the evaluation, "], ["P", "You shared that "], ["T", `${S.meta.initials.trim() ? S.meta.initials.trim() + "’s" : "Your child’s"} teacher shared that `]].forEach(([k, lead]) => { const c = pick.filter(i => srcOf(i.id) === k).map(i => pClause(i, k)); if (c.length) sen.push(lead + listJoin(c) + "."); }); }
     const im = listJoin(impactsOf(s).slice(0, 3));
-    L.push(`${s.parent}: ${c.length ? `${n} ${listJoin(c)}. ` : ""}${s.iv === "make" ? `This may make ${im} more difficult.` : `This may affect ${im}.`}`);
+    sen.push(s.iv === "make" ? `This may make ${im} more difficult.` : `This may affect ${im}.`);
+    L.push(`${s.parent}: ${sen.join(" ")}`);
   });
   const ty = activeSecs().filter(s => status(s).st === "Typical"); if (ty.length) L.push(`Skills in the typical range for age: ${listJoin(ty.map(s => s.parent.toLowerCase()))}.`);
   return L.join("\n\n");
@@ -424,7 +575,7 @@ function renderParent() {
   $("#parent").innerHTML = `<div class="doc parentdoc">${headBlock(C.titles.parent)}<p class="disc">${esc(C.parentDisclaimer)}</p>
   <h3>Why we met</h3><p>${esc(S.meta.reason.join("; ") || "To look at your child's development and everyday skills")}${S.meta.reasonText ? ": " + esc(S.meta.reasonText) : ""}.</p>
   ${rows.length ? `<h3>Test results</h3><table class="bands"><thead><tr><th>Area tested</th>${C.scoreBands.map(b => `<th>${b.l}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr><td>${esc(plain(r))}</td>${C.scoreBands.map(b => `<td class="${descBand(r.d) === b.k ? "hit b-" + b.k : ""}">${descBand(r.d) === b.k ? "●" : ""}</td>`).join("")}</tr>`).join("")}</tbody></table>` : ""}
-  <h3>What we found</h3><div class="fhead no-print"><span class="muted">Editable</span>${tools("p-text", "parent")}</div>${ta("p-text", "parent.text", P.text != null ? P.text : parentAuto(), 8)}<div class="print-only ptext">${esc(P.text != null ? P.text : parentAuto()).replace(/\n\n/g, "</p><p>").replace(/^/, "<p>") + "</p>"}</div>
+  <h3>What we found</h3><div class="fhead no-print"><span class="muted">Editable</span>${tools("p-text", "parent")}</div>${ta("p-text", "parent", fieldVal("parent"), 8)}<div class="print-only ptext">${esc(fieldVal("parent")).replace(/\n\n/g, "</p><p>").replace(/^/, "<p>") + "</p>"}</div>
   ${str.length ? `<h3>Strengths</h3><ul class="cols">${str.slice(0, 6).map(x => `<li>Can ${esc(x)} independently</li>`).join("")}</ul>` : ""}
   <h3>Our recommendation</h3><p>${esc(parentRec())}</p>
   ${secs.length && S.rec.svc !== "Not recommended at this time" ? `<h3>Areas OT will address</h3><ul class="cols">${secs.map(s => `<li>${esc(s.address)}</li>`).join("")}</ul>` : ""}
@@ -434,7 +585,7 @@ function renderParent() {
   <ul class="print-only cols">${P.home.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
   <label class="row-text no-print"><span class="lbl">Additional notes for family (optional)</span><input type="text" maxlength="240" data-bind="parent.addl" value="${esc(P.addl)}"></label>${P.addl ? `<p class="print-only">${esc(P.addl)}</p>` : ""}
   <div class="shared"><b>Shared with:</b> ${["Parent", "School"].map(k => `<button type="button" class="box${P.shared.includes(k) ? " on" : ""}" data-act="shared" data-v="${k}" aria-pressed="${P.shared.includes(k)}">${P.shared.includes(k) ? "☒" : "☐"} ${k}</button>`).join(" ")}</div>
-  <div class="sigline"><span>Therapist signature${S.meta.clinician ? " — " + esc(S.meta.clinician) : ""}</span><span>Date</span></div></div>`;
+  ${sigBlock("parent", "Therapist signature" + (S.meta.clinician ? " — " + S.meta.clinician : ""))}</div>`;
   document.querySelectorAll("#parent textarea").forEach(grow);
 }
 /* ---------- goal areas (clinician only) ---------- */
@@ -499,7 +650,9 @@ document.addEventListener("click", e => {
     case "rflag": S.rec[D.k] = !S.rec[D.k]; return done();
     case "ref": { const r = C.referrals.find(x => x.id === D.id); S.refs[D.id] = !refOn(r); return done(); }
     case "copy": { const el = document.getElementById(D.src); if (el) copyText(el.value); return; }
-    case "reset": { const k = D.k.split("."); if (k[0] === "sec") repSec(k[1])[k[2]] = null; else if (k[0] === "parent") S.parent.text = null; else S.rep[k[0]] = null; return done(); }
+    case "reset": delete S.edits[D.k]; delete S.restore[D.k]; return done();
+    case "erestore": S.edits[D.k] = { t: S.restore[D.k], b: autoFor(D.k) }; delete S.restore[D.k]; return done();
+    case "edismiss": delete S.restore[D.k]; return done();
     case "fusionAll": return openFusion();
     case "fusionTxt": return download(fname("txt"), fusionAll(), "text/plain");
     case "closeModal": b.closest(".modal").remove(); return;
@@ -509,7 +662,7 @@ document.addEventListener("click", e => {
     case "goal": S.goals[D.g] = !goalOn(D.g, D.s); return done();
     case "gpick": toggle(gst(D.g)[D.k], D.v, true); return done();
     case "print": if (S.tab === "form" || S.tab === "scores") { S.tab = "report"; render(); } setTimeout(() => window.print(), 50); return;
-    case "export": return download(fname("json"), JSON.stringify(S, null, 1));
+    case "export": return download(fname("json"), JSON.stringify(sigExport(S), null, 1));
     case "import": return $("#importFile").click();
     case "importPrefill": return $("#prefillFile").click();
     case "showPicker": showPicker = true; return renderSection("HDR");
@@ -521,12 +674,13 @@ function onBind(e, commit) { const el = e.target, k = el.dataset && el.dataset.b
   if (k.startsWith("notesSec.")) { S.notesSec = S.notesSec || {}; S.notesSec[k.slice(9)] = v; save(); return; }
   setPath(k, v); if (el.tagName === "TEXTAREA") grow(el); save();
   if (commit && (el.tagName === "SELECT" || /^scores\.|^meta\.(dob|date)$/.test(k))) { if (/^meta\.(dob|date)$|^bandOv$/.test(k)) { S.secBand = {}; S.secAuto = {}; } if (/\.prompt\.|^prompt\./.test(k) && heavy(k.split(".")[1])) { const s = el.closest(".sec"); s && checkDrop(s.id.slice(4)); } setTimeout(() => rerender(el), 0); } else if (commit && k.startsWith("meta.")) setTimeout(renderBar, 0); }
-document.addEventListener("input", e => { if (e.target.tagName !== "SELECT") onBind(e, false); });
+document.addEventListener("input", e => { const k = e.target.dataset && e.target.dataset.ekey; if (k) { setEdit(k, e.target.value); grow(e.target); save(); return; } if (e.target.tagName !== "SELECT") onBind(e, false); });
 document.addEventListener("change", e => { if (e.target.type === "file") return; onBind(e, true); });
 function readFile(inp, fn) { inp.addEventListener("change", () => { const f = inp.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { try { if (fn(JSON.parse(r.result)) !== false) { save(); render(); } } catch (err) { alert("That file could not be read: " + err.message); } inp.value = ""; }; r.readAsText(f); }); }
 function init() {
   document.title = C.titles.app + " · " + C.practice; $("#practice").textContent = C.practice; $("#apptitle").textContent = C.titles.app;
-  readFile($("#importFile"), j => { if (j.type === "ITS-OT-FullEval-Prefill") return loadScreener(j); else if (j.v === 1 && j.meta) S = merge(blank(), j); else throw new Error("not an OT evaluation or screener prefill file"); });
+  migrateEdits();
+  readFile($("#importFile"), j => { if (j.type === "ITS-OT-FullEval-Prefill") return loadScreener(j); else if (j.v === 1 && j.meta) { sigImport(j); S = merge(blank(), j); migrateEdits(); } else throw new Error("not an OT evaluation or screener prefill file"); });
   readFile($("#prefillFile"), j => { loadScreener(j); });
   render();
   if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("service-worker.js").catch(() => {});
