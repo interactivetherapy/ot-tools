@@ -172,3 +172,4 @@ li.urgent{color:var(--mag);font-weight:600}
 .phead .logo.hlogo{width:150px;height:auto}
 @media (max-width:700px){.phead .logo.hlogo{width:104px}}
 @media print{.phead .logo.hlogo{width:1.3in}}
+.handoff{margin-top:14px;padding:10px 12px;border:1.5px dashed var(--cyan);border-radius:12px;background:#f2fafc}.handoff .check{margin:0 0 4px;background:#fff}.small{font-size:13px}

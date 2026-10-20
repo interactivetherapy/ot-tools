@@ -200,3 +200,7 @@ ul.cols{columns:2;column-gap:24px;padding-left:20px}ul.cols li{break-inside:avoi
 .doclogo{width:150px}
 @media (max-width:700px){.doclogo{width:104px}}
 @media print{.doclogo{width:1.45in}}
+.picker{margin:4px 0 12px;padding:12px;border:1.5px solid var(--cyan);border-radius:12px;background:#f2fafc}.picker .lbl{margin-bottom:2px}.small{font-size:13px}
+.pick{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;width:100%;min-height:52px;margin-top:8px;padding:10px 14px;border:1.5px solid var(--line);border-radius:12px;background:#fff;cursor:pointer;text-align:left;font-size:16px}.pick b{color:var(--mag);min-width:80px}.pick span{color:var(--muted);font-size:14px}
+.fromscr{font-size:11px;font-weight:700;color:#7a4b00;background:#fde9c8;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.inote{margin-top:8px;min-height:44px;font-size:15px}

@@ -12,10 +12,10 @@ const listJoin = l => l.length < 2 ? l.join("") : l.slice(0, -1).join(", ") + (l
 const ord = n => { n = Math.round(+n); const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 function blank() {
   return { v: 1, meta: { initials: "", dob: "", date: todayISO(), clinician: "", setting: [], informants: [], reason: [], reasonText: "", dx: [], dxText: "", refSource: "", svcNow: [], svcPast: [] },
-    bandOv: "auto", olderAll: false, secBand: {}, secAuto: {}, older: {}, younger: {}, ans: {}, prompt: {}, trials: {}, val: {}, src: {}, opts: {}, sel: {}, tr: {},
+    bandOv: "auto", olderAll: false, secBand: {}, secAuto: {}, older: {}, younger: {}, ans: {}, prompt: {}, pcount: {}, trials: {}, val: {}, src: {}, opts: {}, sel: {}, tr: {},
     behav: { none: false, f: {}, long: {} }, wcOn: false, scores: {}, domOv: {}, screener: null, refs: {},
     rep: { sec: {}, gen: null }, rec: { svc: "Recommended", freq: "1–2x/week", len: "45-minute", dur: "6 months", setting: "clinic", home: true, cg: true, reeval: "6 months", prog: "Good", factors: ["consistent attendance", "caregiver carryover of the home program"] },
-    goals: {}, parent: { home: [], shared: [], text: null, addl: "" }, guide: {}, notes: "", sign: "", tab: "form", updated: null };
+    goals: {}, parent: { home: [], shared: [], text: null, addl: "" }, guide: {}, notes: "", sign: "", fromScreener: null, scrNotes: "", gfbOn: true, inote: {}, tab: "form", updated: null };
 }
 function merge(a, b) { for (const k in b) { if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k]) && a[k] && typeof a[k] === "object" && !Array.isArray(a[k])) merge(a[k], b[k]); else a[k] = b[k]; } return a; }
 let S = (() => { try { const j = JSON.parse(localStorage.getItem(KEY)); if (j && j.v === 1) return merge(blank(), j); } catch (e) {} return blank(); })();
@@ -37,7 +37,7 @@ const srcOf = id => S.src[id] || "O";
 const heavy = id => C.heavyPrompts.includes(S.prompt[id]);
 const isNS = id => S.ans[id] === "NS" || (heavy(id) && S.ans[id] && !["NA", "NO"].includes(S.ans[id]));
 const fFlag = i => i.pos ? ["N", "R"].includes(S.ans[i.id]) : ["O", "A"].includes(S.ans[i.id]);
-const activeSecs = () => C.sections.filter(s => !s.optional || S.wcOn);
+const activeSecs = () => C.sections.filter(s => (!s.optional || S.wcOn) && (s.id !== "GFB" || S.gfbOn !== false));
 /* ---------- scores ---------- */
 function testApplies(t) { const a = age(); return !a || (a.yrs >= t.age[0] && a.yrs <= t.age[1]); }
 const sc = t => S.scores[t] || (S.scores[t] = { adm: "", r: {}, s: {} });
@@ -64,6 +64,9 @@ function autoStatus(sec) {
     if (ns >= 2) bump(2, ns + " age-expected items need support"); else if (ns) bump(1, "1 age-expected item needs support"); if (e >= 2) bump(1, e + " age-expected items emerging");
     const fi = freqItems(sec.id), fl = fi.filter(fFlag).length, mi = fi.filter(i => S.ans[i.id] === "S").length;
     if (fl >= 2) bump(2, fl + " responses often/always (or rarely for expected responses)"); else if (fl) bump(1, "1 response often/always"); if (mi >= 2) bump(1, mi + " responses sometimes");
+    if (sec.id === "GFB") { const fr = (S.opts.gfFrus || []).filter(v => v !== "None observed"), n = S.sel.gfFrusN || "";
+      if (n === "6+ per session") bump(2, "frustration behaviors 6+ per session"); else if (n === "3–5 per session" || fr.length >= 2) bump(1, "frustration behaviors observed");
+      if (["3–5", "6+"].includes(S.sel.gfOos)) bump(1, "out-of-seat episodes " + S.sel.gfOos); }
     if (sec.id === "GM" && (S.opts.gmSeen || []).length >= 2) bump(1, (S.opts.gmSeen || []).length + " postural / movement observations");
     if (sec.id === "SOC" && !S.behav.none) { const f = Object.values(S.behav.f), hi = f.filter(v => ["3–5 per session", "6+ per session"].includes(v)).length;
       if (hi >= 2 || f.includes("6+ per session")) bump(2, "regulation behaviors 3+ per session"); else if (hi || f.length >= 2) bump(1, "regulation behaviors observed"); }
@@ -87,19 +90,51 @@ function importPrefill(j) {
   (j.referrals || []).forEach(r => { const id = C.screenerRefMap[r.referral || r]; if (id) S.refs[id] = true; });
   if ((h.mobility || []).some(v => v && v !== "No")) S.wcOn = true;
 }
+/* ---------- screener handoff (same device / same site) ---------- */
+function readHandoffs() { try { const j = JSON.parse(localStorage.getItem(C.handoffKey)); if (j && j.items) return Object.values(j.items).sort((a, b) => (b.saved || "").localeCompare(a.saved || "")); } catch (e) {} return []; }
+function isDirty() { const m = S.meta; return !!(m.initials.trim() || m.dob || Object.keys(S.ans).length || Object.keys(S.opts).length || testRows(null).length || S.rep.gen != null || S.fromScreener); }
+let showPicker = false;
+function applyScreenerItems(j) {
+  const date = (j.demographics || {}).screeningDate || "", done = [], unmatched = [];
+  (j.items || []).forEach(it => { const m = C.screenerItemMap[it.id];
+    const v = m ? (m.conv === "posFreq" ? C.posFreqToPerf[it.rating] : it.rating) : null;
+    if (!m || !v || S.ans[m.to]) { unmatched.push(`${it.label}: ${it.ratingLabel.toLowerCase()} (${(C.srcShort[it.source] || "Observed").toLowerCase()})${it.note ? "; note: " + it.note : ""}`); return; }
+    S.ans[m.to] = v; if (C.itemSources.includes(it.source)) S.src[m.to] = it.source; const pr = C.screenerPromptMap[it.prompt]; if (pr) S.prompt[m.to] = pr; done.push(m.to);
+    if (it.note) unmatched.push(`${it.label} (note): ${it.note}`); });
+  const L = [`From screener (${date || "date not recorded"}). Review before finalizing.`];
+  if ((j.priorities || []).length) L.push("Caregiver priorities: " + j.priorities.map(p => [((j.domains || []).find(d => d.id === p.dom) || {}).name || p.dom, p.routine, p.note].filter(Boolean).join(" — ")).filter(Boolean).join("; ") + ".");
+  const b = j.behaviors || {}; if (b.none) L.push("Regulation behaviors on screener: none observed."); else if ((b.list || []).length) L.push("Regulation behaviors on screener: " + b.list.map(x => `${x.label.toLowerCase()} (${x.freq.toLowerCase()})`).join("; ") + ".");
+  if ((j.referrals || []).length) L.push("Referral triggers noted on screener: " + j.referrals.map(r => `${r.referral}: ${r.reason}`).join("; ") + ".");
+  if (unmatched.length) L.push("Screener items without a matching evaluation item: " + unmatched.join("; ") + ".");
+  if ((j.nextSteps || []).length) L.push("Next steps selected on screener: " + j.nextSteps.join("; ") + ".");
+  if (j.notes) L.push("Screener notes: " + j.notes);
+  S.scrNotes = L.join("\n"); S.fromScreener = { date, items: done };
+}
+function loadScreener(j) {
+  if (!j || j.type !== "ITS-OT-FullEval-Prefill") throw new Error("not a screener file");
+  if (isDirty() && !confirm("An evaluation is already in progress on this device. Replace it with this screener's information? Export the current evaluation first if you need to keep it.")) return false;
+  S = blank(); importPrefill(j); applyScreenerItems(j); showPicker = false; save(); render(); window.scrollTo(0, 0); flash("Loaded from screener — review marked items"); return true;
+}
+function pickerHtml() { const hs = readHandoffs(); if (!hs.length) return "";
+  if (isDirty() && !showPicker) return `<div class="actions"><button type="button" class="btn ghost" data-act="showPicker">Load from screener (${hs.length})</button></div>`;
+  return `<div class="picker"><div class="lbl">Load from screener</div><div class="muted small">Screeners marked "Evaluation" on this device. Choose one to pre-fill this evaluation, or just start entering to begin blank.</div>
+  ${hs.map(h => `<button type="button" class="pick" data-act="loadHandoff" data-k="${esc(h.key)}"><b>${esc(h.name || "(no initials)")}</b><span>DOB ${esc(h.dob || "—")}</span><span>Screened ${esc(h.date || "—")}</span></button>`).join("")}</div>`; }
+const fromMark = id => S.fromScreener && S.fromScreener.items.includes(id) ? `<span class="fromscr">From screener (${esc(S.fromScreener.date || "")})</span>` : "";
+
 /* ---------- render helpers ---------- */
 const chip = (act, attrs, label, on, tone) => `<button type="button" class="chip${on ? " on" : ""}${tone ? " t-" + tone : ""}" data-act="${act}" ${attrs} aria-pressed="${!!on}">${esc(label)}</button>`;
 const sel = (bind, opts, cur, ph) => `<select data-bind="${bind}">${opts.map(o => { const k = typeof o === "string" ? o : o.k, l = typeof o === "string" ? (o || ph || "Select…") : o.l; return `<option value="${esc(k)}"${(cur || "") === k ? " selected" : ""}>${esc(l)}</option>`; }).join("")}</select>`;
 function trialOpts() { const o = [{ k: "", l: "Trials…" }]; C.trialDen.forEach(y => { for (let x = 0; x <= y; x++) o.push({ k: x + "/" + y, l: x + " of " + y }); }); return o; }
 const TRIALS = trialOpts();
+const PCOUNT = [{ k: "", l: "Prompt count…" }].concat(C.promptCounts.map(n => ({ k: String(n), l: "Prompts ×" + n })));
 function srcTag(id) { const s = srcOf(id); return `<button type="button" class="src s-${s}" data-act="src" data-id="${id}" title="Tap: Observed → Parent/Caregiver → Teacher">${esc(C.srcShort[s])}</button>`; }
 function optsBlock(b) { const cur = S.opts[b.id] || [];
   return `<div class="row-opts"><div class="lbl">${esc(b.label)}</div><div class="chips">${b.opts.map(o => chip("opt", `data-g="${b.id}" data-v="${esc(optL(o))}" data-m="${b.multi ? 1 : 0}"`, optL(o), cur.includes(optL(o)))).join("")}</div></div>`; }
 function selBlock(b) { return `<label class="row-sel"><span class="lbl">${esc(b.label)}</span>${sel("sel." + b.id, b.assist ? C.assist : b.opts, S.sel[b.id])}</label>`; }
 function perfRow(i, b) { const v = S.ans[i.id];
-  return `<div class="item${v ? " done" : ""}"><div class="ilbl">${esc(i.l)} <span class="band">${i.r === "All" ? "All ages" : i.r}</span>${srcTag(i.id)}</div>
+  return `<div class="item${v ? " done" : ""}"><div class="ilbl">${esc(i.l)} <span class="band">${i.r === "All" ? "All ages" : i.r}</span>${fromMark(i.id)}${srcTag(i.id)}</div>
   <div class="chips rate">${C.perf.map(o => chip("rate", `data-id="${i.id}" data-v="${o.k}"`, o.l, v === o.k, o.tone)).join("")}</div>
-  <div class="ictl">${sel("prompt." + i.id, C.prompts, S.prompt[i.id])}${sel("trials." + i.id, TRIALS, S.trials[i.id])}${i.unit ? `<label class="val"><input type="text" inputmode="decimal" maxlength="12" placeholder="Value" data-bind="val.${i.id}" value="${esc(S.val[i.id] || "")}"><span>${esc(i.unit)}</span></label>` : ""}</div></div>`; }
+  <div class="ictl">${sel("prompt." + i.id, C.prompts, S.prompt[i.id])}${sel("pcount." + i.id, PCOUNT, (S.pcount || {})[i.id])}${sel("trials." + i.id, TRIALS, S.trials[i.id])}${i.unit ? `<label class="val"><input type="text" inputmode="decimal" maxlength="12" placeholder="Count" data-bind="val.${i.id}" value="${esc(S.val[i.id] || "")}"><span>${esc(i.unit)}</span></label>` : ""}</div>${i.note ? `<input type="text" class="inote" maxlength="160" placeholder="Note (what was observed)" data-bind="inote.${i.id}" value="${esc(S.inote[i.id] || "")}">` : ""}</div>`; }
 function perfBlock(b, sid) {
   const cb = childBand(), wb = workBand(sid), g = { at: [], yv: [], yh: [], old: [] };
   b.items.forEach(i => { const [lo, hi] = range(i.r); if (wb >= lo && wb <= hi) g.at.push(i); else if (hi < wb) (hi >= wb - 1 ? g.yv : g.yh).push(i); else g.old.push(i); });
@@ -113,7 +148,7 @@ function perfBlock(b, sid) {
   return h;
 }
 function freqBlock(b) { return b.items.map(i => { const v = S.ans[i.id];
-  return `<div class="item${v ? " done" : ""}${fFlag(i) ? " flagged" : ""}"><div class="ilbl">${esc(i.l)} <span class="band">${esc(i.sys)}</span>${srcTag(i.id)}</div><div class="chips rate">${C.freq.map(o => { const bad = i.pos ? ["N", "R"].includes(o.k) : ["O", "A"].includes(o.k); return chip("rate", `data-id="${i.id}" data-v="${o.k}"`, o.l, v === o.k, bad ? "flag" : o.k === "S" ? "mid" : "ok"); }).join("")}</div></div>`; }).join(""); }
+  return `<div class="item${v ? " done" : ""}${fFlag(i) ? " flagged" : ""}"><div class="ilbl">${esc(i.l)} <span class="band">${esc(i.sys)}</span>${fromMark(i.id)}${srcTag(i.id)}</div><div class="chips rate">${C.freq.map(o => { const bad = i.pos ? ["N", "R"].includes(o.k) : ["O", "A"].includes(o.k); return chip("rate", `data-id="${i.id}" data-v="${o.k}"`, o.l, v === o.k, bad ? "flag" : o.k === "S" ? "mid" : "ok"); }).join("")}</div></div>`; }).join(""); }
 function behavBlock() { const B = S.behav;
   return `<div class="row-opts"><div class="lbl">Regulation behaviors observed (select, then count and longest episode)</div><div class="chips">${chip("behnone", "", "None observed", B.none, "ok")}${C.behaviors.map(b => chip("beh", `data-id="${b.id}"`, b.l, B.f[b.id] != null)).join("")}</div>
   ${C.behaviors.filter(b => B.f[b.id] != null).map(b => `<div class="item sub"><div class="ilbl">${esc(b.l)}</div><div class="ictl">${sel("behav.f." + b.id, C.behCount, B.f[b.id], "Count…")}${sel("behav.long." + b.id, C.behLong, B.long[b.id], "Longest…")}</div></div>`).join("")}</div>`; }
@@ -124,20 +159,22 @@ function headerBody() { const m = S.meta, a = age();
   return `<div class="grid4"><label><span class="lbl">Child initials / ID</span><input type="text" maxlength="20" autocomplete="off" data-bind="meta.initials" value="${esc(m.initials)}"></label>
     <label><span class="lbl">Date of birth</span><input type="date" data-bind="meta.dob" value="${esc(m.dob)}"></label><label><span class="lbl">Evaluation date</span><input type="date" data-bind="meta.date" value="${esc(m.date)}"></label>
     <div class="agebox"><span class="lbl">Age</span><div class="agev">${a ? a.txt + " <small>y;m</small>" : "—"}</div><div class="muted">${a ? "Band " + esc(bandLabel(childBand())) : "Enter DOB"}</div></div></div>
-  <div class="actions"><button type="button" class="btn ghost" data-act="importPrefill">Import screener prefill</button>${S.screener ? `<span class="muted">Screener ${esc(S.screener.date || "")} imported · ${esc(S.screener.outcome || "")}</span>` : ""}</div>
+  ${pickerHtml()}<div class="actions"><button type="button" class="btn ghost" data-act="importPrefill">Import screener file</button>${S.screener ? `<span class="muted">Screener ${esc(S.screener.date || "")} imported · ${esc(S.screener.outcome || "")}</span>` : ""}</div>
+  ${S.fromScreener ? `<div class="banner">From screener (${esc(S.fromScreener.date || "")}): ${S.fromScreener.items.length} item(s) pre-filled and marked. Please review each marked item and the notes below.</div>` : ""}
+  ${S.fromScreener || S.scrNotes ? `<label class="row-text"><span class="lbl">Notes from screener (clinician only; not printed)</span><textarea rows="4" data-bind="scrNotes">${esc(S.scrNotes)}</textarea></label>` : ""}
   ${multiChips("Setting", "setting", C.settings)}${multiChips("Informants", "informants", C.informants)}
   ${multiChips("Reason for referral", "reason", C.reasons.map(r => ({ k: r, l: r })))}<label class="row-text"><span class="lbl">Referral details (optional)</span><input type="text" maxlength="200" data-bind="meta.reasonText" value="${esc(m.reasonText)}"></label>
   ${multiChips("Diagnosis", "dx", C.diagnoses.map(r => ({ k: r, l: r })))}<label class="row-text"><span class="lbl">Diagnosis details / precautions (optional)</span><input type="text" maxlength="160" data-bind="meta.dxText" value="${esc(m.dxText)}"></label>
   <div class="grid2"><label><span class="lbl">Referral source</span>${sel("meta.refSource", [""].concat(C.refSources), m.refSource)}</label><label><span class="lbl">Evaluator / credentials</span><input type="text" maxlength="60" data-bind="meta.clinician" value="${esc(m.clinician)}"></label></div>
   ${multiChips("Services now", "svcNow", C.services.map(r => ({ k: r, l: r })))}${multiChips("Services past", "svcPast", C.services.map(r => ({ k: r, l: r })))}
   <div class="grid2"><label><span class="lbl">Age band</span>${sel("bandOv", [{ k: "auto", l: "Auto from DOB" + (a ? " (" + C.bands[a.band].label + ")" : "") }].concat(C.bands.map(b => ({ k: String(b.id), l: "Override: " + b.label }))), S.bandOv)}</label><div></div></div>
-  <div class="chips">${chip("olderAll", "", S.olderAll ? "Showing older items (all sections)" : "Show older items (all sections)", S.olderAll)}${chip("wc", "", S.wcOn ? "Wheelchair / Mobility section: ON" : "Add Wheelchair / Mobility & Equipment section", S.wcOn)}</div>`; }
+  <div class="chips">${chip("olderAll", "", S.olderAll ? "Showing older items (all sections)" : "Show older items (all sections)", S.olderAll)}${chip("gfb", "", S.gfbOn !== false ? "General Functional Behavior section: ON" : "General Functional Behavior section: OFF", S.gfbOn !== false)}${chip("wc", "", S.wcOn ? "Wheelchair / Mobility section: ON" : "Add Wheelchair / Mobility & Equipment section", S.wcOn)}</div>`; }
 function multiChips(label, key, opts) { const cur = S.meta[key]; return `<div class="row-opts"><div class="lbl">${esc(label)}</div><div class="chips">${opts.map(o => chip("meta", `data-k="${key}" data-v="${esc(o.k)}"`, o.l, cur.includes(o.k))).join("")}</div></div>`; }
 function secBody(sec) {
   let h = "";
   if (S.screener && S.screener.domains[sec.id]) h += `<div class="screen-note"><b>From screener:</b> ${S.screener.domains[sec.id].map(x => esc(x.name + ": " + x.status)).join(" · ")}${(() => { const cs = S.screener.concerns.filter(c => (S.screener.domains[sec.id] || []).some(x => c.section && c.section.toLowerCase().includes(x.name.split(/[ &/]/)[0].toLowerCase()))); return cs.length ? `<ul>${cs.slice(0, 5).map(c => `<li>${esc(c.item)} — ${esc(c.rating)} (${esc(c.source)})</li>`).join("")}</ul>` : ""; })()}</div>`;
   h += sec.blocks.map(b => { if (sec.id === "WC" && !wcShow(b)) return "";
-    return b.t === "opts" ? optsBlock(b) : b.t === "sel" ? selBlock(b) : b.t === "perf" ? perfBlock(b, sec.id) : b.t === "freq" ? freqBlock(b) : b.t === "behav" ? behavBlock() : b.t === "transfers" ? transfersBlock() : ""; }).join("");
+    return b.t === "opts" ? optsBlock(b) : b.t === "sel" ? selBlock(b) : b.t === "perf" ? perfBlock(b, sec.id) : b.t === "freq" ? freqBlock(b) : b.t === "behav" ? behavBlock() : b.t === "transfers" ? transfersBlock() : b.t === "text" ? `<label class="row-text"><span class="lbl">${esc(b.label)}</span><input type="text" maxlength="200" data-bind="sel.${b.id}" value="${esc(S.sel[b.id] || "")}"></label>` : ""; }).join("");
   const s = status(sec);
   h += `<div class="secstat"><span class="lbl">Section status</span><div class="chips">${STS.map(v => chip("domov", `data-d="${sec.id}" data-v="${v}"`, v + (s.auto === v ? " (auto)" : ""), s.st === v, v === "Concern" ? "flag" : v === "Monitor" ? "mid" : "ok")).join("")}</div><div class="why">${s.ov ? "<b>Override.</b> " : ""}${esc(s.why.join(" · ") || "No flags")}</div></div>
   <label class="row-text"><span class="lbl">Section note (optional)</span><input type="text" maxlength="200" data-bind="notesSec.${sec.id}" value="${esc((S.notesSec || {})[sec.id] || "")}"></label>`;
@@ -171,7 +208,9 @@ function renderScores() {
 }
 /* ---------- text generation ---------- */
 const Nm = () => S.meta.initials.trim() || "The child";
-const supOf = id => C.support[S.prompt[id] || ""] || "support";
+const pcnt = id => { const n = (S.pcount || {})[id]; return n && S.prompt[id] && S.prompt[id] !== "I" ? " (x" + n + ")" : ""; };
+const supOf = id => (C.support[S.prompt[id] || ""] || "support") + pcnt(id);
+const supParent = id => (C.supportParent[S.prompt[id]] || C.support[S.prompt[id] || ""] || "support").replace("physical assistance", "hands-on help");
 const FW = { O: "often", A: "consistently", S: "sometimes", R: "rarely", N: "rarely" };
 function dataOf(i) { const d = []; const t = S.trials[i.id]; if (t) { const [x, y] = t.split("/"); d.push(x + " of " + y + " trials"); } if (i.unit && S.val[i.id]) d.push(S.val[i.id] + " " + i.unit); return d.length ? " (" + d.join("; ") + ")" : ""; }
 function clause(i, past) {
@@ -191,6 +230,16 @@ function extrasObs(id) { // observation-only extras (grasp, shapes, posture, beh
   const o = [];
   if (id === "FM") { const g = (SEC.FM.blocks.find(b => b.id === "grasp").opts).find(x => has("grasp", x.l)); if (g && g.desc && g.lvl != null && g.lvl < childBand()) o.push("used " + g.desc + " on writing tools");
     const sh = SEC.FM.blocks.find(b => b.id === "shapes").opts.filter(x => has("shapes", x.l)); if (sh.length) o.push("copied " + listJoin(sh.map(x => x.l.replace(/\s*[|—+/]$/, "").toLowerCase().replace(/^x$/, "an X"))) + " from a model"); }
+  if (id === "GFB") {
+    const FV = { "Task refusal (says no or pushes materials away)": "say \u201cno\u201d or push materials away", "Crying": "cry", "Leaving the work area": "leave the work area", "Throwing materials": "throw materials", "Dropping to the floor": "drop to the floor", "Hitting or kicking": "hit or kick" };
+    const fr = (S.opts.gfFrus || []).filter(v => FV[v]); if (fr.length) o.push("was observed to " + listJoin(fr.map(v => FV[v])) + (S.sel.gfFrusN ? " (" + S.sel.gfFrusN.replace(" per session", " times per session") + ")" : ""));
+    const tb = (S.opts.gfTransBeh || []).filter(v => v !== "None observed" && !/timer/.test(v)); if (tb.length) o.push("showed " + listJoin(tb.map(v => v.toLowerCase())) + " during transitions");
+    if (has("gfTransBeh", "Needed a visual timer or first–then")) o.push("used a visual timer or first–then board during transitions");
+    if (S.sel.gfOos) o.push(S.sel.gfOos === "None" ? "remained in the seat with no out-of-seat episodes" : "left the seat " + S.sel.gfOos + " times during tabletop work");
+    const bt = (S.opts.gfBreak || []); if (bt.length) o.push("took breaks (" + bt.map(v => v.toLowerCase()).join(", ") + ")");
+    if (S.sel.gfCg) o.push("participated with the caregiver " + S.sel.gfCg.toLowerCase().replace("present for part", "present for part"));
+    if (S.sel.gfCgDiff && !/Not compared/.test(S.sel.gfCgDiff)) o.push(S.sel.gfCgDiff === "Similar either way" ? "participated similarly with the caregiver present or absent" : "showed " + S.sel.gfCgDiff.toLowerCase());
+  }
   if (id === "GM" && (S.opts.gmSeen || []).length) o.push("presented with " + listJoin(S.opts.gmSeen.map(v => v.toLowerCase())));
   if (id === "SOC" && !S.behav.none) C.behaviors.forEach(b => { if (S.behav.f[b.id] != null) o.push("was observed to " + b.obs + (S.behav.f[b.id] ? " " + S.behav.f[b.id].replace(" per session", " times per session") : "") + (S.behav.long[b.id] ? " (longest episode " + S.behav.long[b.id].toLowerCase() + ")" : "")); });
   return o;
@@ -218,13 +267,24 @@ function wcText() {
   C.transferTypes.forEach(k => { if ((S.tr[k] || {}).a === "Independent") str.push("independent " + k.toLowerCase() + " transfers"); });
   return { obs, rep, str, needs: L("wcNeeds") };
 }
+function validityText() {
+  const n = Nm(), poss = n === "The child" ? "the child\u2019s" : n + "\u2019s", R = [];
+  const fr = (S.opts.gfFrus || []).filter(v => v !== "None observed"); if (fr.length) R.push(listJoin(fr.map(v => v.replace(/ \(.*\)/, "").toLowerCase())) + " observed during testing");
+  if (["3–5", "6+"].includes(S.sel.gfOos)) R.push(S.sel.gfOos + " out-of-seat episodes");
+  ["gf1", "gf10"].forEach(k => { if (isNS(k)) R.push(k === "gf1" ? "brief time on task before redirection" : "brief seated tolerance"); });
+  const why = (S.sel.gfValidWhy || "").trim() || listJoin(R), ch = S.sel.gfValid || (R.length ? "under" : "valid");
+  if (ch === "valid") return `Results are considered a valid estimate of ${poss} current performance.`;
+  if (ch === "caution") return `Results should be interpreted with caution${why ? " due to " + why : ""}.`;
+  return `Results may underestimate ${poss} current skills${why ? " due to " + why : " due to behaviors observed during testing"}.`;
+}
 function impactsOf(sec) { const fl = flagged(sec.id), seen = []; fl.forEach(i => { if (i.impact && !seen.includes(i.impact)) seen.push(i.impact); }); if (!seen.length) seen.push(sec.impact); return seen.slice(0, 4); }
 function impactSentence(sec, lead) { const im = listJoin(impactsOf(sec)); return (lead || "These findings") + (sec.iv === "make" ? " may make " + im + " more difficult." : " may affect " + im + "."); }
 function sum6(id) {
   const sec = SEC[id], st = status(sec).st, n = Nm(), parts = [];
   parts.push(st === "Concern" ? `${n} demonstrates deficits in ${sec.name} skills compared with age expectations.` : st === "Monitor" ? `${n} demonstrates emerging or inconsistent ${sec.name} skills compared with age expectations.` : `${n} demonstrates ${sec.name} skills within age expectations for the items assessed.`);
   const rows = testRows(id);
-  if (id === "WC") parts.push("Standardized testing was not completed for this area; findings are based on clinical observation and caregiver report.");
+  if (id === "GFB") parts.push("Testing validity: " + validityText());
+  else if (id === "WC") parts.push("Standardized testing was not completed for this area; findings are based on clinical observation and caregiver report.");
   else if (!rows.length) parts.push("No standardized scores were reported for this area; findings are based on clinical observation and caregiver/teacher report.");
   else { const by = {}; rows.forEach(r => (by[r.t.l] = by[r.t.l] || []).push(r)); parts.push(Object.keys(by).map(t => `On the ${t}, ${n} obtained ` + listJoin(by[t].map(r => r.kind === "ss" ? `a ${r.l} standard score of ${r.ss}${r.pr ? " (" + ord(r.pr) + " percentile)" : ""}${r.d ? ", in the " + r.d + " range" : ""}` : `a ${r.l} scale score of ${r.ss}`)) + ".").join(" ")); }
   let obs, rep = [];
@@ -244,8 +304,9 @@ function sum6(id) {
 function fusionAuto(id) {
   const sec = SEC[id], st = status(sec).st, p = sum6(id), imp = [];
   if (id === "WC") { const w = wcText(); w.obs.concat(w.rep).forEach(x => imp.push("• " + x.charAt(0).toUpperCase() + x.slice(1))); }
-  else { flagged(id).forEach(i => { const r = (i.sys ? C.freq : C.perf).find(o => o.k === S.ans[i.id]); const pr = C.prompts.find(o => o.k === S.prompt[i.id]); imp.push(`• ${i.l}: ${r.l.toLowerCase()}${pr && pr.k ? ", " + pr.l.toLowerCase() : ""}${dataOf(i).replace(/^ \(|\)$/g, m => m === ")" ? "" : ", ")} (${C.srcShort[srcOf(i.id)].toLowerCase()})`); });
-    extrasObs(id).forEach(x => imp.push("• " + x.charAt(0).toUpperCase() + x.slice(1) + " (observed)")); }
+  else { flagged(id).forEach(i => { const r = (i.sys ? C.freq : C.perf).find(o => o.k === S.ans[i.id]); const pr = C.prompts.find(o => o.k === S.prompt[i.id]); imp.push(`• ${i.l}: ${r.l.toLowerCase()}${pr && pr.k ? ", " + pr.l.toLowerCase() + pcnt(i.id) : ""}${dataOf(i).replace(/^ \(|\)$/g, m => m === ")" ? "" : ", ")} (${C.srcShort[srcOf(i.id)].toLowerCase()})`); });
+    extrasObs(id).forEach(x => imp.push("• " + x.charAt(0).toUpperCase() + x.slice(1) + " (observed)"));
+    perfItems(id).forEach(i => { const nt = (S.inote[i.id] || "").trim(); if (nt) imp.push(`• ${i.l} — note: ${nt}`); }); }
   testRows(id).filter(r => r.kind === "ss" ? C.belowDesc.includes(r.d) : r.ss <= 10).forEach(r => imp.push(`• ${r.t.l} ${r.l}: ${r.kind === "ss" ? "standard score " + r.ss + (r.pr ? ", " + ord(r.pr) + " percentile" : "") + ", " + r.d : "scale score " + r.ss}`));
   return { str: p[5], imp: imp.join("\n") || "No performance impairments identified in this area for the items assessed.", lim: st === "Typical" ? "No functional limitations were identified in this area for the items assessed." : impactSentence(sec, "Findings"), sum: p.join(" ") };
 }
@@ -276,7 +337,7 @@ function genAuto() {
   if (S.rec.svc !== "Not recommended at this time" && (con.length || mon.length)) out.push(`Skilled occupational therapy is medically necessary to address ${listJoin(con.concat(mon).map(s => s.name))} skills through ${listJoin(methodsAuto(con.concat(mon)))}. These interventions require the clinical reasoning of a licensed occupational therapist to analyze performance, grade activities, adjust supports as skills change, and train caregivers for carryover.`);
   return out.join(" ");
 }
-function methodsAuto(secs) { const map = { FM: 0, ADL: 1, SENS: 2, PLAY: 2, EF: 2, SOC: 2, GM: 3, WC: 5 }, o = []; secs.forEach(s => { const k = C.skilledMethods[map[s.id]]; if (!o.includes(k)) o.push(k); }); o.push(C.skilledMethods[4]); return o; }
+function methodsAuto(secs) { const map = { FM: 0, ADL: 1, SENS: 2, PLAY: 2, EF: 2, SOC: 2, GFB: 2, GM: 3, WC: 5 }, o = []; secs.forEach(s => { const k = C.skilledMethods[map[s.id]]; if (!o.includes(k)) o.push(k); }); o.push(C.skilledMethods[4]); return o; }
 function recAuto() {
   const R = S.rec, secs = activeSecs().filter(s => status(s).st !== "Typical"), o = [];
   if (R.svc === "Recommended") o.push(`Occupational therapy is recommended ${freqWord(R.freq)} for ${R.len} sessions over ${R.dur} in the ${R.setting} setting${secs.length ? `, to address ${listJoin(secs.map(s => s.name))} skills` : ""}.`);
@@ -321,7 +382,7 @@ function renderReport() {
   <div class="no-print actions"><button type="button" class="btn" data-act="fusionAll">Copy all for Fusion</button><span class="muted">Text is editable; Reset restores the auto text. Goal areas are not included.</span></div>
   <h3>Referral &amp; Background</h3><p><b>Reason for referral:</b> ${esc(m.reason.concat(m.reasonText ? [m.reasonText] : []).join("; ") || "—")} · <b>Referral source:</b> ${esc(m.refSource || "—")} · <b>Diagnosis:</b> ${esc(m.dx.concat(m.dxText ? [m.dxText] : []).join("; ") || "—")} · <b>Informants:</b> ${esc(m.informants.map(k => (C.informants.find(o => o.k === k) || {}).l).join(", ") || "—")}</p>${svc}
   ${S.screener ? `<p><b>Screener (${esc(S.screener.date || "")}):</b> ${esc(S.screener.outcome || "")}</p>` : ""}
-  <h3>Standardized Assessment</h3><div class="tscroll">${scoreTable()}</div>
+  <h3>Standardized Assessment</h3><div class="tscroll">${scoreTable()}</div>${S.gfbOn !== false ? `<p><b>Testing validity:</b> ${esc(validityText())}</p>` : ""}
   <h3>Section Findings</h3>${secHtml}
   <section class="sec"><div class="sec-h"><span class="num">Σ</span><h2>General Summary</h2></div><div class="sec-b">
   <div class="grid2 no-print"><label><span class="lbl">Prognosis</span>${sel("rec.prog", C.prognosis, R.prog)}</label><div></div></div>
@@ -337,7 +398,7 @@ function renderReport() {
 }
 /* ---------- parent summary ---------- */
 const PFW = { O: "often", A: "usually", S: "sometimes", R: "rarely", N: "rarely" };
-function pClause(i) { if (i.sys) return PFW[S.ans[i.id]] + " seems to " + i.obs; return isNS(i.id) ? "needs " + supOf(i.id).replace("physical assistance", "hands-on help") + " to " + i.do : "is beginning to " + i.do + (S.prompt[i.id] && S.prompt[i.id] !== "I" ? " with " + supOf(i.id).replace("physical assistance", "hands-on help") : ""); }
+function pClause(i) { if (i.sys) return PFW[S.ans[i.id]] + " seems to " + i.obs; return isNS(i.id) ? "needs " + supParent(i.id) + " to " + i.do : "is beginning to " + i.do + (S.prompt[i.id] && S.prompt[i.id] !== "I" ? " with " + supParent(i.id) : ""); }
 function parentAuto() {
   const n = Nm(), L = [];
   activeSecs().filter(s => status(s).st !== "Typical").forEach(s => {
@@ -377,7 +438,7 @@ function renderParent() {
   document.querySelectorAll("#parent textarea").forEach(grow);
 }
 /* ---------- goal areas (clinician only) ---------- */
-const GPRE = { fm: "FM", gm: "GM", se: "SENS", adl: "ADL", pl: "PLAY", ef: "EF", so: "SOC", wc: "WC" };
+const GPRE = { gf: "GFB", fm: "FM", gm: "GM", se: "SENS", adl: "ADL", pl: "PLAY", ef: "EF", so: "SOC", wc: "WC" };
 function suggestedGoals(id) { const g = []; flagged(id).forEach(i => { if (i.goal && !g.includes(i.goal)) g.push(i.goal); }); if (!g.length && status(SEC[id]).st !== "Typical") { const f = Object.keys(C.goals).find(k => GPRE[k.split("_")[0]] === id); if (f) g.push(f); } return g; }
 const goalOn = (gid, sid) => S.goals[gid] != null ? S.goals[gid] : suggestedGoals(sid).includes(gid);
 function renderGoals() {
@@ -419,7 +480,7 @@ document.addEventListener("click", e => {
   const done = () => { save(); rerender(b); };
   switch (a) {
     case "tab": S.tab = D.v; save(); render(); window.scrollTo(0, 0); return;
-    case "rate": S.ans[D.id] = S.ans[D.id] === D.v ? undefined : D.v; if (!S.ans[D.id]) delete S.ans[D.id]; { const sid = b.closest(".sec").id.slice(4); if (S.ans[D.id] === "NS") checkDrop(sid); } return done();
+    case "rate": if (S.fromScreener) S.fromScreener.items = S.fromScreener.items.filter(x => x !== D.id); S.ans[D.id] = S.ans[D.id] === D.v ? undefined : D.v; if (!S.ans[D.id]) delete S.ans[D.id]; { const sid = b.closest(".sec").id.slice(4); if (S.ans[D.id] === "NS") checkDrop(sid); } return done();
     case "src": { const o = C.itemSources, s = srcOf(D.id); S.src[D.id] = o[(o.indexOf(s) + 1) % o.length]; return done(); }
     case "opt": toggle(S.opts[D.g] = S.opts[D.g] || [], D.v, D.m === "1"); if (D.g === "mh" && selfHarm()) S.refs.psych = true; return done();
     case "meta": toggle(S.meta[D.k], D.v, true); return done();
@@ -428,6 +489,7 @@ document.addEventListener("click", e => {
     case "older": S.older[D.sec] = true; return done();
     case "younger": S.younger[D.sec] = true; return done();
     case "olderAll": S.olderAll = !S.olderAll; save(); return renderForm();
+    case "gfb": S.gfbOn = S.gfbOn === false; save(); return renderForm();
     case "wc": S.wcOn = !S.wcOn; save(); renderForm(); if (S.wcOn) setTimeout(() => { const el = document.getElementById("sec-WC"); el && el.scrollIntoView(); }, 0); return;
     case "domov": S.domOv[D.d] = S.domOv[D.d] === D.v || status(SEC[D.d]).auto === D.v ? "" : D.v; return done();
     case "behnone": S.behav.none = !S.behav.none; if (S.behav.none) { S.behav.f = {}; S.behav.long = {}; } return done();
@@ -450,6 +512,8 @@ document.addEventListener("click", e => {
     case "export": return download(fname("json"), JSON.stringify(S, null, 1));
     case "import": return $("#importFile").click();
     case "importPrefill": return $("#prefillFile").click();
+    case "showPicker": showPicker = true; return renderSection("HDR");
+    case "loadHandoff": { const h = readHandoffs().find(x => x.key === D.k); if (h) loadScreener(h.data); return; }
     case "new": if (confirm("Start a new evaluation? Export first if you need this one.")) { S = blank(); try { localStorage.removeItem(KEY); } catch (e) {} render(); window.scrollTo(0, 0); } return;
   }
 });
@@ -459,14 +523,14 @@ function onBind(e, commit) { const el = e.target, k = el.dataset && el.dataset.b
   if (commit && (el.tagName === "SELECT" || /^scores\.|^meta\.(dob|date)$/.test(k))) { if (/^meta\.(dob|date)$|^bandOv$/.test(k)) { S.secBand = {}; S.secAuto = {}; } if (/\.prompt\.|^prompt\./.test(k) && heavy(k.split(".")[1])) { const s = el.closest(".sec"); s && checkDrop(s.id.slice(4)); } setTimeout(() => rerender(el), 0); } else if (commit && k.startsWith("meta.")) setTimeout(renderBar, 0); }
 document.addEventListener("input", e => { if (e.target.tagName !== "SELECT") onBind(e, false); });
 document.addEventListener("change", e => { if (e.target.type === "file") return; onBind(e, true); });
-function readFile(inp, fn) { inp.addEventListener("change", () => { const f = inp.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { try { fn(JSON.parse(r.result)); save(); render(); } catch (err) { alert("That file could not be read: " + err.message); } inp.value = ""; }; r.readAsText(f); }); }
+function readFile(inp, fn) { inp.addEventListener("change", () => { const f = inp.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { try { if (fn(JSON.parse(r.result)) !== false) { save(); render(); } } catch (err) { alert("That file could not be read: " + err.message); } inp.value = ""; }; r.readAsText(f); }); }
 function init() {
   document.title = C.titles.app + " · " + C.practice; $("#practice").textContent = C.practice; $("#apptitle").textContent = C.titles.app;
-  readFile($("#importFile"), j => { if (j.type === "ITS-OT-FullEval-Prefill") importPrefill(j); else if (j.v === 1 && j.meta) S = merge(blank(), j); else throw new Error("not an OT evaluation or screener prefill file"); });
-  readFile($("#prefillFile"), j => { if (j.type !== "ITS-OT-FullEval-Prefill") throw new Error("not a screener prefill file"); importPrefill(j); flash("Screener prefill imported"); });
+  readFile($("#importFile"), j => { if (j.type === "ITS-OT-FullEval-Prefill") return loadScreener(j); else if (j.v === 1 && j.meta) S = merge(blank(), j); else throw new Error("not an OT evaluation or screener prefill file"); });
+  readFile($("#prefillFile"), j => { loadScreener(j); });
   render();
   if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("service-worker.js").catch(() => {});
 }
-window.__ote = { S: () => S, sum6, fusionAll, genVal, recVal, parentAuto, status: id => status(SEC[id]), importPrefill: j => { importPrefill(j); save(); render(); }, render, set: o => { merge(S, o); save(); render(); } };
+window.__ote = { S: () => S, sum6, fusionAll, genVal, recVal, parentAuto, status: id => status(SEC[id]), importPrefill: j => { importPrefill(j); save(); render(); }, loadScreener, readHandoffs, isDirty, render, set: o => { merge(S, o); save(); render(); } };
 init();
 })();

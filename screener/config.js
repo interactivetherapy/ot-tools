@@ -26,7 +26,7 @@ const CONFIG = {
     behFreq: [{ k: "R", l: "Rarely" }, { k: "S", l: "Sometimes" }, { k: "O", l: "Often" }, { k: "A", l: "Always" }],
     prompt: [
       { k: "", l: "Prompt level…" }, { k: "I", l: "Independent" }, { k: "G", l: "Gestural" }, { k: "V", l: "Verbal" },
-      { k: "Vis", l: "Visual" }, { k: "M", l: "Model" }, { k: "PP", l: "Partial physical" }, { k: "FP", l: "Full physical" }
+      { k: "Vis", l: "Visual" }, { k: "M", l: "Model" }, { k: "Tac", l: "Tactile" }, { k: "PP", l: "Partial physical" }, { k: "FP", l: "Full physical" }
     ]
   },
   settings: [
@@ -264,4 +264,4 @@ const CONFIG = {
     { k: "Elevated", l: "Elevated", d: "Differences that get in the way of daily activities. We suggest a closer look." }
   ]
 };
-CONFIG.support = { "": "help", I: "help", G: "gestural cues", V: "verbal cues", Vis: "visual cues", M: "a demonstration", PP: "partial hands-on help", FP: "hand-over-hand help" };
+CONFIG.support = { "": "help", I: "help", G: "gestural cues", V: "verbal cues", Vis: "visual cues", M: "a demonstration", Tac: "a light touch cue", PP: "partial hands-on help", FP: "hand-over-hand help" };

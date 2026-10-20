@@ -14,7 +14,7 @@ function blank() {
     bandOv: "auto", olderAll: false, secBand: {}, secAuto: {}, older: {}, younger: {},
     ans: {}, src: {}, prompt: {}, opts: {}, sel: {}, text: {},
     prios: [{}, {}, {}], behav: { none: false, f: {} },
-    domOv: {}, outOv: "", rescreen: "", tests: {}, refs: {}, next: [], notes: "", evalDate: "", sign: "",
+    domOv: {}, outOv: "", rescreen: "", tests: {}, refs: {}, next: [], notes: "", evalDate: "", sign: "", handoff: false, handoffKey: "",
     sum: { showAreas: true, showStart: true, start: {}, shared: [], home: [], text: null, addl: "", activity: "play" }, tab: "form", updated: null };
 }
 let S = load();
@@ -24,8 +24,18 @@ const IKEY = "its-ot-home-ideas-v1";
 function savedIdeas() { try { return JSON.parse(localStorage.getItem(IKEY)) || []; } catch (e) { return []; } }
 function allIdeas() { return [...new Set(C.homeIdeas.concat(savedIdeas(), S.sum.home))]; }
 function merge(a, b) { for (const k in b) { if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k]) && a[k] && typeof a[k] === "object" && !Array.isArray(a[k])) merge(a[k], b[k]); else a[k] = b[k]; } return a; }
-let saveT; function save() { S.updated = new Date().toISOString(); clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(S)); flash("Saved on this device"); } catch (e) { flash("Could not save — export JSON"); } }, 150); }
+let saveT; function save() { S.updated = new Date().toISOString(); clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(S)); syncHandoff(); flash("Saved on this device"); } catch (e) { flash("Could not save — export JSON"); } }, 150); }
 function flash(t) { const el = $("#savestate"); if (el) { el.textContent = t; el.classList.add("on"); clearTimeout(flash.t); flash.t = setTimeout(() => el.classList.remove("on"), 1200); } }
+
+/* ---------- handoff to the OT Evaluation app (same device, same site) ---------- */
+const HKEY = "its_screener_handoff";
+const handoffKey = () => [S.meta.initials.trim() || "(no initials)", S.meta.dob || "(no DOB)", S.meta.date || "(no date)"].join("|");
+function readHandoffs() { try { const j = JSON.parse(localStorage.getItem(HKEY)); if (j && j.items) return j; } catch (e) {} return { v: 1, items: {} }; }
+function writeHandoffs(h) { if (Object.keys(h.items).length) localStorage.setItem(HKEY, JSON.stringify(h)); else localStorage.removeItem(HKEY); }
+function syncHandoff() { const h = readHandoffs();
+  if (S.handoffKey && (!S.handoff || S.handoffKey !== handoffKey())) delete h.items[S.handoffKey];
+  if (S.handoff) { const k = handoffKey(); h.items[k] = { key: k, name: S.meta.initials.trim(), dob: S.meta.dob, date: S.meta.date, saved: new Date().toISOString(), data: prefill() }; S.handoffKey = k; } else S.handoffKey = "";
+  writeHandoffs(h); localStorage.setItem(KEY, JSON.stringify(S)); }
 
 /* ---------- age & bands ---------- */
 function age() {
@@ -237,7 +247,9 @@ function testsSection() {
   <div class="row-opts mt"><div class="lbl">${esc(C.nextStepsLabel)} <span class="muted">(clinician copy only)</span></div><div class="chips">${C.nextSteps.map(n => chip("next", `data-v="${esc(n)}"`, n, S.next.includes(n))).join("")}</div></div>
   <label class="row-text"><span class="lbl">Notes / caregiver quotes / items to probe in full eval (optional)</span><textarea rows="3" data-bind="notes">${esc(S.notes)}</textarea></label>
   <div class="grid2"><label><span class="lbl">Full eval date</span><input type="date" data-bind="evalDate" value="${esc(S.evalDate)}"></label><label><span class="lbl">Clinician name / credentials</span><input type="text" maxlength="80" data-bind="sign" value="${esc(S.sign)}"></label></div>
-  <div class="actions"><button type="button" class="btn" data-act="tab" data-v="summary">Open Results Summary</button><button type="button" class="btn ghost" data-act="tab" data-v="clin">Clinician copy</button><button type="button" class="btn ghost" data-act="prefill">Start full eval (export prefill)</button></div>`;
+  <div class="actions"><button type="button" class="btn" data-act="tab" data-v="summary">Open Results Summary</button><button type="button" class="btn ghost" data-act="tab" data-v="clin">Clinician copy</button><button type="button" class="btn ghost" data-act="prefill">Export for eval</button></div>
+  <div class="handoff"><label class="check evalchk"><input type="checkbox" id="handoffChk" data-act="handoff"${S.handoff ? " checked" : ""}><span><b>Evaluation</b></span></label>
+  <div class="muted small">${S.handoff ? "A copy of this screener is saved on this device for the OT Evaluation app. Uncheck to remove it." : "Check to save a copy of this screener on this device for the OT Evaluation app."}${S.handoff && (!S.meta.initials.trim() || !S.meta.dob) ? " Add initials and DOB so the evaluation can find this child." : ""}</div></div>`;
 }
 function sectionBody(sec) {
   if (sec.header) return headerSection();
@@ -418,12 +430,17 @@ function setTab(t) {
 }
 function download(name, obj) { const b = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }); const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(u); a.remove(); }, 500); }
 const fname = p => `${p}_${(S.meta.initials || "child").replace(/[^\w-]/g, "")}_${S.meta.date || todayISO()}.json`;
+function prefillItems() { const out = [];
+  C.sections.forEach(s => (s.blocks || []).forEach(b => { if (b.t !== "perf" && b.t !== "freq") return; b.items.forEach(i => { const v = S.ans[i.id]; if (!v) return;
+    out.push({ id: i.id, section: s.title, label: i.l, kind: b.t, pos: !!b.pos, rating: v, ratingLabel: lblOf(b.t, v), source: srcOf(i.id), prompt: S.prompt[i.id] || "", note: (S.text || {})[i.id] || "" }); }); }));
+  return out; }
+function prefillBehaviors() { if (S.behav.none) return { none: true, list: [] }; return { none: false, list: C.behaviors.filter(b => S.behav.f[b.id]).map(b => ({ id: b.id, label: b.l, obs: b.obs, freq: lblOf("behFreq", S.behav.f[b.id]) })) }; }
 function prefill() {
   const a = age(), o = outcome(), g = suggest();
   const concerns = [];
   C.sections.forEach(s => (s.blocks || []).forEach(b => { if (b.t === "perf") b.items.forEach(i => { if (S.ans[i.id] === "NS" || S.ans[i.id] === "E") concerns.push({ section: s.title, item: i.l, rating: lblOf("perf", S.ans[i.id]), source: C.srcShort[srcOf(i.id)] }); });
     if (b.t === "freq") b.items.forEach(i => { if (isFlagF(Object.assign({ pos: b.pos }, i)) || S.ans[i.id] === "S") concerns.push({ section: s.title, item: i.l, rating: lblOf("freq", S.ans[i.id]), source: C.srcShort[srcOf(i.id)] }); }); }));
-  return { type: "ITS-OT-FullEval-Prefill", version: C.version, created: new Date().toISOString(), practice: C.practice,
+  return { type: "ITS-OT-FullEval-Prefill", version: C.version, created: new Date().toISOString(), practice: C.practice, items: prefillItems(), behaviors: prefillBehaviors(), notes: S.notes || "", nextSteps: S.next.slice(),
     demographics: { initials: S.meta.initials, dob: S.meta.dob, age: a ? a.txt : "", band: C.bands[childBand()].label, screeningDate: S.meta.date, setting: S.meta.setting, informants: S.meta.informants.map(k => C.informants.find(x => x.k === k).l), clinician: S.meta.clinician },
     referralConcern: S.meta.concern, priorities: S.prios.filter(p => p.dom), history: { birth: S.opts.birth, diagnoses: S.opts.dx, visionHearing: S.opts.vh, regression: S.opts.regress, neuroSigns: (S.opts.neuroM || []).concat(S.opts.neuroH || []), servicesNow: S.opts.svcNow, servicesPast: S.opts.svcPast, mobility: S.opts.wc, mobilityFlags: S.opts.wcFlags },
     domains: C.domains.map(d => { const s = status(d); return { id: d.id, name: d.name, status: s.st, auto: s.auto, override: s.ov || null, basis: s.why, developmentalRange: devRange(d) }; }),
@@ -435,6 +452,7 @@ function after(el, full) { save(); if (full) { renderForm(); return; } const sec
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-act]"); if (!el) return; const d = el.dataset, act = d.act;
   if (act === "test" || act === "ref") { (act === "test" ? S.tests : S.refs)[d.id] = el.checked; save(); return; }
+  if (act === "handoff") { S.handoff = el.checked; syncHandoff(); flash(S.handoff ? "Saved for the evaluation" : "Removed from the evaluation list"); renderSection("s15"); return; }
   e.preventDefault();
   switch (act) {
     case "rate": { const was = S.ans[d.id]; if (was === d.v) delete S.ans[d.id]; else S.ans[d.id] = d.v;
@@ -471,7 +489,7 @@ document.addEventListener("click", e => {
     case "sumreset": S.sum.text = null; save(); renderSummary(); break;
     case "print": if (S.tab === "form") setTab("clin"); setTimeout(() => window.print(), 50); break;
     case "export": download(fname("OT_Screener"), S); break;
-    case "prefill": download(fname("OT_FullEval_Prefill"), prefill()); flash("Prefill exported"); break;
+    case "prefill": download(fname("OT_Screener_for_Eval"), prefill()); flash("Exported for eval"); break;
     case "import": $("#importFile").click(); break;
     case "new": if (confirm("Start a new screener? This clears the current one from this device. Export JSON first if you need to keep it.")) { S = blank(); save(); setTab("form"); } break;
   }
