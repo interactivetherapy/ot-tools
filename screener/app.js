@@ -652,6 +652,7 @@ window.addEventListener("beforeprint", () => { if (S.tab === "summary") renderSu
 document.querySelectorAll("[data-title]").forEach(el => el.textContent = C.titles[el.dataset.title]);
 $("#practice").textContent = C.practice; $("#logo").outerHTML = logo(true); setFoot();
 setTab(S.tab || "form");
-if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("service-worker.js").catch(() => {});
+// Offline caching is handled by the single OT Tools service worker (../sw.js, registered by ../shell.js).
+window.__itsFlush = () => { clearTimeout(saveT); try { S.updated = new Date().toISOString(); localStorage.setItem(KEY, JSON.stringify(S)); syncHandoff(); } catch (e) { /* storage full: autosave flash already warns */ } };
 window.__ots = { get state() { return S; }, outcome, status: id => status(C.domains.find(d => d.id === id)), reset: () => { S = blank(); save(); setTab("form"); } };
 })();

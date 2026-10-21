@@ -683,7 +683,8 @@ function init() {
   readFile($("#importFile"), j => { if (j.type === "ITS-OT-FullEval-Prefill") return loadScreener(j); else if (j.v === 1 && j.meta) { sigImport(j); S = merge(blank(), j); migrateEdits(); } else throw new Error("not an OT evaluation or screener prefill file"); });
   readFile($("#prefillFile"), j => { loadScreener(j); });
   render();
-  if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("service-worker.js").catch(() => {});
+// Offline caching is handled by the single OT Tools service worker (../sw.js, registered by ../shell.js).
+  window.__itsFlush = () => { clearTimeout(saveT); try { S.updated = new Date().toISOString(); localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* storage full */ } };
 }
 window.__ote = { S: () => S, sum6, fusionAll, genVal, recVal, parentAuto, status: id => status(SEC[id]), importPrefill: j => { importPrefill(j); save(); render(); }, loadScreener, readHandoffs, isDirty, render, set: o => { merge(S, o); save(); render(); } };
 init();

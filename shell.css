@@ -1,0 +1,10 @@
+/* ITS OT Tools switcher + notice (screen only) */
+.ots-switch{display:flex;gap:4px;padding:6px 10px;background:#fff;border-bottom:1px solid #e3e8ee;overflow-x:auto}
+.ots-switch a{flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;min-height:36px;padding:6px 14px;border-radius:999px;border:1.5px solid #b9c3cd;color:#384557;text-decoration:none;font-weight:700;font-size:14px;white-space:nowrap}
+.ots-switch a[aria-current=page]{background:#A5047E;border-color:#A5047E;color:#fff}
+.ots-switch a:focus-visible{outline:3px solid #0CA4C9;outline-offset:2px}
+.ots-banner{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff4e0;border-bottom:1px solid #f1c27d;font-size:14px;color:#384557}
+.ots-banner span{flex:1}.ots-banner a{color:#A5047E;font-weight:700}
+.ots-banner button{border:0;background:none;font-size:22px;line-height:1;cursor:pointer;color:#384557;min-width:36px;min-height:36px}
+@media print{.ots-switch,.ots-banner{display:none!important}}
+.top-b .ots-switch{padding:2px 0 6px;border-bottom:0;background:transparent}
